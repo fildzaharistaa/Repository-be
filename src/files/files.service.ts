@@ -133,7 +133,7 @@ export class FilesService {
     return this.fileRepository.save(fileEntity);
   }
 
-  async findAll(folderId: string, user: User): Promise<File[]> {
+  async findAll(folderId: string, user: User): Promise<any[]> {
     const folder = await this.folderRepository.findOne({
       where: { id: folderId },
     });
