@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 import { File } from './file.entity';
 import { FolderPermission } from './folder-permission.entity';
+import { User } from './user.entity';
 
 @Entity('folders')
 export class Folder {
@@ -23,6 +24,13 @@ export class Folder {
   @Column({ type: 'uuid', nullable: true })
   parent_id: string | null;
 
+  @Column({ type: 'uuid', nullable: true })
+  owner_id: string;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: 'owner_id' })
+  owner: User;
+  
   @ManyToOne(() => Folder, (folder) => folder.children, { nullable: true })
   @JoinColumn({ name: 'parent_id' })
   parent: Folder;

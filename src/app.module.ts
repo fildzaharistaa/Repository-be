@@ -11,6 +11,7 @@ import { FoldersModule } from './folders/folders.module';
 import { FilesModule } from './files/files.module';
 import { PermissionsModule } from './permissions/permissions.module';
 import { ChatbotModule } from './chatbot/chatbot.module';
+import { AccessRequestsModule } from './access-requests/access-requests.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
@@ -34,6 +35,7 @@ import jwtConfig from './config/jwt.config';
     FilesModule,
     PermissionsModule,
     ChatbotModule,
+    AccessRequestsModule,
   ],
   controllers: [AppController],
   providers: [
