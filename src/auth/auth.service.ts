@@ -1,8 +1,7 @@
 import {
   Injectable,
   UnauthorizedException,
-  Inject,
-  forwardRef,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -20,7 +19,13 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
-  async validateUser(email: string, password: string): Promise<User | null> {
+  // =========================
+  // VALIDATE USER (LOCAL STRATEGY)
+  // =========================
+  async validateUser(
+    email: string,
+    password: string,
+  ): Promise<User | null> {
     const user = await this.userRepository.findOne({
       where: { email },
       relations: ['role'],
@@ -31,6 +36,7 @@ export class AuthService {
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
+
     if (!isPasswordValid) {
       return null;
     }
@@ -38,8 +44,14 @@ export class AuthService {
     return user;
   }
 
+  // =========================
+  // LOGIN
+  // =========================
   async login(loginDto: LoginDto) {
-    const user = await this.validateUser(loginDto.email, loginDto.password);
+    const user = await this.validateUser(
+      loginDto.email,
+      loginDto.password,
+    );
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -62,5 +74,42 @@ export class AuthService {
       },
     };
   }
-}
 
+  // =========================
+  // REGISTER
+  // =========================
+  async register(data: any) {
+    const { email, password, name, role_id, unit } = data;
+
+    const existingUser = await this.userRepository.findOne({
+      where: { email },
+    });
+
+    if (existingUser) {
+      throw new BadRequestException('Email already registered');
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = this.userRepository.create({
+      email,
+      password: hashedPassword,
+      name,
+      role_id,
+      unit,
+    });
+
+    const savedUser = await this.userRepository.save(newUser);
+
+    return {
+      message: 'User registered successfully',
+      user: {
+        id: savedUser.id,
+        email: savedUser.email,
+        name: savedUser.name,
+        role_id: savedUser.role_id,
+        unit: savedUser.unit,
+      },
+    };
+  }
+}

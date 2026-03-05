@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Body, Req } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Req,
+  Param,
+  Patch
+} from '@nestjs/common';
 import { AccessRequestsService } from './access-requests.service';
 import { Public } from '../common/decorators/public.decorator';
 
@@ -9,6 +17,9 @@ export class AccessRequestsController {
     private readonly accessRequestsService: AccessRequestsService
   ) {}
 
+  // =============================
+  // TEST ROUTE
+  // =============================
   @Public()
   @Get('test')
   test() {
@@ -17,14 +28,69 @@ export class AccessRequestsController {
     };
   }
 
+  // =============================
+  // USER REQUEST ACCESS
+  // =============================
   @Post()
-  async requestAccess(
+  requestAccess(
     @Body('folderId') folderId: string,
+    @Body('fileId') fileId: string,
     @Req() req
   ) {
     return this.accessRequestsService.requestAccess(
       req.user.id,
-      folderId
+      folderId,
+      fileId
+    );
+  }
+
+  // =============================
+  // USER LIHAT REQUEST SENDIRI
+  // =============================
+  @Get('my-requests')
+  getMyRequests(@Req() req) {
+    return this.accessRequestsService.getUserRequests(
+      req.user.id
+    );
+  }
+
+  // =============================
+  // OWNER LIHAT PENDING REQUEST
+  // =============================
+  @Get('pending')
+  getPendingRequests(@Req() req) {
+    return this.accessRequestsService.getPendingRequests(
+      req.user.id
+    );
+  }
+
+  // =============================
+  // OWNER APPROVE REQUEST
+  // =============================
+  @Patch(':id/approve')
+  approveRequest(
+    @Param('id') id: string,
+    @Body() body: any,
+    @Req() req
+  ) {
+    return this.accessRequestsService.approveRequest(
+      Number(id),
+      req.user.id,
+      body
+    );
+  }
+
+  // =============================
+  // OWNER REJECT REQUEST
+  // =============================
+  @Patch(':id/reject')
+  reject(
+    @Param('id') id: string,
+    @Req() req
+  ) {
+    return this.accessRequestsService.rejectRequest(
+      Number(id),
+      req.user.id
     );
   }
 

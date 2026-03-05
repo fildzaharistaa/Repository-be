@@ -7,7 +7,8 @@ import {
 import { Reflector } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { FolderPermission } from '../../entities';
+import { FolderPermission } from '../../entities/folder-permission.entity';
+import { Folder } from '../../entities/folder.entity';
 import { RequestWithUser } from '../interfaces/request-with-user.interface';
 
 export enum PermissionType {
@@ -21,8 +22,12 @@ export enum PermissionType {
 export class FolderPermissionGuard implements CanActivate {
   constructor(
     private reflector: Reflector,
+
     @InjectRepository(FolderPermission)
     private permissionRepository: Repository<FolderPermission>,
+
+    @InjectRepository(Folder)
+    private folderRepository: Repository<Folder>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -37,6 +42,7 @@ export class FolderPermissionGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<RequestWithUser>();
     const user = request.user;
+
     const folderId =
       request.params.folderId ||
       request.params.id ||
@@ -71,13 +77,30 @@ export class FolderPermissionGuard implements CanActivate {
   ): Promise<boolean> {
     const now = new Date();
 
+    const folder = await this.folderRepository.findOne({
+      where: { id: folderId },
+      relations: ['owner'],
+    });
+
+    if (!folder) {
+      return false;
+    }
+
+    // owner selalu boleh
+    if (folder.owner?.id === userId) {
+      return true;
+    }
+
+    // role sama dengan owner (WD2 → folder WD2)
+    if (folder.owner?.role_id === roleId) {
+      return true;
+    }
+
+    // cek permission table
     const permission = await this.permissionRepository
       .createQueryBuilder('fp')
       .where('fp.folder_id = :folderId', { folderId })
-      .andWhere(
-        '(fp.user_id = :userId OR fp.role_id = :roleId)',
-        { userId, roleId },
-      )
+      .andWhere('fp.user_id = :userId', { userId })
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
       .getOne();
 
@@ -88,15 +111,18 @@ export class FolderPermissionGuard implements CanActivate {
     switch (permissionType) {
       case PermissionType.READ:
         return permission.can_read;
+
       case PermissionType.CREATE:
         return permission.can_create;
+
       case PermissionType.UPDATE:
         return permission.can_update;
+
       case PermissionType.DELETE:
         return permission.can_delete;
+
       default:
         return false;
     }
   }
 }
-

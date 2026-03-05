@@ -1,39 +1,38 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  ManyToOne,
-  JoinColumn,
-  CreateDateColumn,
-  UpdateDateColumn,
-  OneToMany,
-} from 'typeorm';
+import {Entity,PrimaryGeneratedColumn,Column,ManyToOne,OneToMany,CreateDateColumn,UpdateDateColumn, JoinColumn,} from 'typeorm';
 import { Role } from './role.entity';
 import { FolderPermission } from './folder-permission.entity';
+import { Folder } from './folder.entity';
 
 @Entity('users')
 export class User {
+
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'varchar', length: 255, unique: true })
-  email: string;
+@Column({ unique: true, type: 'varchar', length: 255 })
+email: string;
 
-  @Column({ type: 'varchar', length: 255 })
+  @Column()
   password: string;
 
-  @Column({ type: 'varchar', length: 255 })
+  @Column()
   name: string;
 
-  @Column({ type: 'uuid', nullable: true })
+  @Column({ type: 'uuid' })
   role_id: string;
 
-  @ManyToOne(() => Role, { eager: true })
+  @ManyToOne(() => Role)
   @JoinColumn({ name: 'role_id' })
   role: Role;
 
+  @Column({ type: 'varchar', length: 50 })
+  unit: string; // wd1 | wd2 | wd3 | sdm
+
   @OneToMany(() => FolderPermission, (permission) => permission.user)
   folderPermissions: FolderPermission[];
+
+  @OneToMany(() => Folder, (folder) => folder.owner)
+  ownedFolders: Folder[];
 
   @CreateDateColumn()
   created_at: Date;
@@ -41,4 +40,3 @@ export class User {
   @UpdateDateColumn()
   updated_at: Date;
 }
-

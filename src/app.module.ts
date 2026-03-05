@@ -15,6 +15,7 @@ import { AccessRequestsModule } from './access-requests/access-requests.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
+import { SearchModule } from './search/search.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import jwtConfig from './config/jwt.config';
     PermissionsModule,
     ChatbotModule,
     AccessRequestsModule,
+    SearchModule,
   ],
   controllers: [AppController],
   providers: [
@@ -46,4 +48,4 @@ import jwtConfig from './config/jwt.config';
     },
   ],
 })
-export class AppModule {}
+export class AppModule {} 

@@ -9,12 +9,14 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
 } from 'typeorm';
+
+import { User } from './user.entity';
 import { File } from './file.entity';
 import { FolderPermission } from './folder-permission.entity';
-import { User } from './user.entity';
 
 @Entity('folders')
 export class Folder {
+
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
@@ -24,16 +26,26 @@ export class Folder {
   @Column({ type: 'uuid', nullable: true })
   parent_id: string | null;
 
-  @Column({ type: 'uuid', nullable: true })
-  owner_id: string;
+  // 🔥 UNIT FOLDER (wd1 / wd2 / wd3 / general)
+  @Column({
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+    default: 'general'
+  })
+  unit: string;
 
-  @ManyToOne(() => User)
+  // 🔥 OWNER UNTUK FOLDER PRIBADI
+  @Column({ type: 'uuid', nullable: true })
+  owner_id: string | null;
+
+  @ManyToOne(() => User, (user) => user.ownedFolders, { nullable: true })
   @JoinColumn({ name: 'owner_id' })
-  owner: User;
-  
+  owner: User | null;
+
   @ManyToOne(() => Folder, (folder) => folder.children, { nullable: true })
   @JoinColumn({ name: 'parent_id' })
-  parent: Folder;
+  parent: Folder | null;
 
   @OneToMany(() => Folder, (folder) => folder.parent)
   children: Folder[];
@@ -52,5 +64,4 @@ export class Folder {
 
   @DeleteDateColumn()
   deleted_at: Date | null;
-}
-
+} 

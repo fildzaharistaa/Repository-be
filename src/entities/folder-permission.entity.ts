@@ -1,11 +1,4 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  ManyToOne,
-  JoinColumn,
-  CreateDateColumn,
-  UpdateDateColumn,
+import {Entity,PrimaryGeneratedColumn,Column,ManyToOne,JoinColumn,CreateDateColumn,UpdateDateColumn,
 } from 'typeorm';
 import { Folder } from './folder.entity';
 import { User } from './user.entity';
@@ -38,16 +31,19 @@ export class FolderPermission {
   role: Role | null;
 
   @Column({ type: 'boolean', default: false })
-  can_read: boolean;
+  can_create: boolean;
 
   @Column({ type: 'boolean', default: false })
-  can_create: boolean;
+  can_read: boolean;
 
   @Column({ type: 'boolean', default: false })
   can_update: boolean;
 
   @Column({ type: 'boolean', default: false })
   can_delete: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  can_download: boolean;
 
   @Column({ type: 'timestamp', nullable: true })
   expires_at: Date | null;

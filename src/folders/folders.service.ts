@@ -40,6 +40,7 @@ export class FoldersService {
 
     const folder = this.folderRepository.create({
       ...createFolderDto,
+      owner: {id: userId} as User,
     });
 
     return this.folderRepository.save(folder);
