@@ -65,6 +65,16 @@ export class AccessRequestsController {
   }
 
   // =============================
+  // NOTIFICATIONS: DATA UNTUK BELL
+  // =============================
+  @Get('notifications')
+  getNotifications(@Req() req) {
+    return this.accessRequestsService.getNotifications(
+      req.user.id
+    );
+  }
+
+  // =============================
   // OWNER APPROVE REQUEST
   // =============================
   @Patch(':id/approve')

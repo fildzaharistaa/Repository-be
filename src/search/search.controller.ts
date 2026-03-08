@@ -15,7 +15,7 @@ export class SearchController {
   ) {
     return this.searchService.globalSearch(
       keyword,
-      req.user.id
+      req.user
     );
   }
 

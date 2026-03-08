@@ -16,6 +16,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
 import { SearchModule } from './search/search.module';
+import { StatsModule } from './stats/stats.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { SearchModule } from './search/search.module';
     ChatbotModule,
     AccessRequestsModule,
     SearchModule,
+    StatsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -38,12 +38,32 @@ export class FoldersService {
       }
     }
 
-    const folder = this.folderRepository.create({
-      ...createFolderDto,
-      owner: {id: userId} as User,
+    // Get user with role for unit assignment
+    const user = await this.folderRepository.manager.getRepository(User).findOne({
+      where: { id: userId },
+      relations: ['role'],
     });
 
-    return this.folderRepository.save(folder);
+    const folder = this.folderRepository.create({
+      ...createFolderDto,
+      owner: { id: userId } as User,
+      unit: user?.role?.name.toLowerCase().substring(0, 50) || 'general',
+    });
+
+    const savedFolder = await this.folderRepository.save(folder);
+
+    // Automatically grant full permissions to the creator
+    await this.permissionRepository.save({
+      folder_id: savedFolder.id,
+      user_id: userId,
+      can_read: true,
+      can_create: true,
+      can_update: true,
+      can_delete: true,
+      can_download: true,
+    });
+
+    return savedFolder;
   }
 
   async findOne(id: string): Promise<Folder> {
@@ -177,7 +197,7 @@ export class FoldersService {
     await this.folderRepository.softRemove(folder);
   }
 
-  private async getAccessibleFolderIds(user: User): Promise<string[]> {
+  public async getAccessibleFolderIds(user: User): Promise<string[]> {
     const now = new Date();
 
     // Get folder IDs where user has read permission (direct or via role)
@@ -230,5 +250,6 @@ export class FoldersService {
         return false;
     }
   }
+
 }
 

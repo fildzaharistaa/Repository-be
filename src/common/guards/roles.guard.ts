@@ -23,7 +23,18 @@ export class RolesGuard implements CanActivate {
       return false;
     }
 
-    return requiredRoles.includes(user.role.name);
+    // Case-insensitive role comparison
+    const userRoleName = user.role.name.toLowerCase();
+    const normalizedRequired = requiredRoles.map(r => r.toLowerCase());
+
+    if (normalizedRequired.includes(userRoleName)) {
+      return true;
+    }
+    // Treat 'super admin' / 'superadmin' as equivalent to 'admin'
+    if (normalizedRequired.includes('admin') && (userRoleName === 'super admin' || userRoleName === 'superadmin')) {
+      return true;
+    }
+    return false;
   }
 }
 

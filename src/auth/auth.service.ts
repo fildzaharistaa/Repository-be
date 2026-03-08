@@ -7,7 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
-import { User } from '../entities';
+import { User, Role } from '../entities';
 import { LoginDto } from './dto/login.dto';
 import { JwtPayload } from '../common/interfaces/jwt-payload.interface';
 
@@ -16,11 +16,15 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
+
+    @InjectRepository(Role)
+    private roleRepository: Repository<Role>,
+
     private jwtService: JwtService,
   ) {}
 
   // =========================
-  // VALIDATE USER (LOCAL STRATEGY)
+  // VALIDATE USER
   // =========================
   async validateUser(
     email: string,
@@ -79,7 +83,7 @@ export class AuthService {
   // REGISTER
   // =========================
   async register(data: any) {
-    const { email, password, name, role_id, unit } = data;
+    const { email, password, name, unit } = data;
 
     const existingUser = await this.userRepository.findOne({
       where: { email },
@@ -89,14 +93,23 @@ export class AuthService {
       throw new BadRequestException('Email already registered');
     }
 
+    // cari role berdasarkan unit
+    const role = await this.roleRepository.findOne({
+      where: { name: unit },
+    });
+
+    if (!role) {
+      throw new BadRequestException('Role not found for this unit');
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const newUser = this.userRepository.create({
       email,
       password: hashedPassword,
       name,
-      role_id,
       unit,
+      role_id: role.id,
     });
 
     const savedUser = await this.userRepository.save(newUser);

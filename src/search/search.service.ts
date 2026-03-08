@@ -3,6 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike } from 'typeorm';
 import { Folder } from '../entities/folder.entity';
 import { File } from '../entities/file.entity';
+import { FoldersService } from '../folders/folders.service';
+import { AccessRequestsService } from '../access-requests/access-requests.service';
+import { User } from '../entities/user.entity';
 
 @Injectable()
 export class SearchService {
@@ -13,9 +16,12 @@ export class SearchService {
 
     @InjectRepository(File)
     private fileRepo: Repository<File>,
+
+    private foldersService: FoldersService,
+    private accessRequestsService: AccessRequestsService,
   ) {}
 
-  async globalSearch(keyword: string, userId: string) {
+  async globalSearch(keyword: string, user: User) {
 
     if (!keyword) {
       return {
@@ -46,22 +52,46 @@ export class SearchService {
       take: 10
     });
 
-    return {
-      folders: folders.map(folder => ({
-        id: folder.id,
-        name: folder.name,
-        type: 'folder',
-        parent: folder.parent?.name ?? 'Repository',
-        owner: folder.owner?.name
-      })),
+    // Compute Access & Request Status
+    const isAdmin = ['admin', 'super admin', 'superadmin'].includes(user.role?.name?.toLowerCase() || '');
+    let accessibleFolderIds: string[] = [];
+    if (!isAdmin) {
+      accessibleFolderIds = await this.foldersService.getAccessibleFolderIds(user);
+    }
+    const accessibleSet = new Set(accessibleFolderIds);
 
-      files: files.map(file => ({
-        id: file.id,
-        name: file.name,
-        type: 'file',
-        parent: file.folder?.name,
-        owner: file.folder?.owner?.name
-      }))
+    const userRequests = await this.accessRequestsService.getUserRequests(user.id);
+    const pendingFolderRequests = new Set(userRequests.filter(r => r.folder && r.status === 'pending').map(r => r.folder.id));
+    const pendingFileRequests = new Set(userRequests.filter(r => r.file && r.status === 'pending').map(r => r.file.id));
+
+    return {
+      folders: folders.map(folder => {
+        const hasAccess = isAdmin || folder.owner?.id === user.id || accessibleSet.has(folder.id);
+        const requestStatus = pendingFolderRequests.has(folder.id) ? 'pending' : null;
+        return {
+          id: folder.id,
+          name: folder.name,
+          type: 'folder',
+          parent: folder.parent?.name ?? 'Repository',
+          owner: folder.owner?.name,
+          hasAccess,
+          requestStatus
+        };
+      }),
+
+      files: files.map(file => {
+        const hasAccess = isAdmin || file.folder?.owner?.id === user.id || (file.folder && accessibleSet.has(file.folder.id));
+        const requestStatus = pendingFileRequests.has(file.id) ? 'pending' : null;
+        return {
+          id: file.id,
+          name: file.name,
+          type: 'file',
+          parent: file.folder?.name,
+          owner: file.folder?.owner?.name,
+          hasAccess,
+          requestStatus
+        };
+      })
     };
   }
-}
+}

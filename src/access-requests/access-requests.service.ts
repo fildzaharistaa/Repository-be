@@ -22,6 +22,9 @@ export class AccessRequestsService {
 
     @InjectRepository(FolderPermission)
     private folderPermissionRepo: Repository<FolderPermission>,
+
+    @InjectRepository(User)
+    private userRepo: Repository<User>,
   ) {}
 
   // =============================
@@ -125,6 +128,7 @@ export class AccessRequestsService {
       where: {
         requester: { id: userId }
       },
+      relations: ['folder', 'file'],
       order: {
         createdAt: 'DESC'
       }
@@ -217,6 +221,69 @@ export class AccessRequestsService {
     request.status = 'rejected';
 
     return this.accessRequestRepo.save(request);
+  }
+
+  // =============================
+  // SUPER ADMIN: LIHAT SEMUA PENDING
+  // =============================
+  async getAllPendingRequests() {
+    return this.accessRequestRepo.find({
+      where: { status: 'pending' },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  // =============================
+  // NOTIFICATIONS: GABUNGAN DATA
+  // =============================
+  async getNotifications(userId: string) {
+    // Cek apakah user adalah admin
+    const user = await this.userRepo.findOne({
+      where: { id: userId },
+      relations: ['role'],
+    });
+    const isAdmin = user?.role?.name === 'admin';
+
+    // Notifikasi untuk pemilik folder: pending requests yang ditujukan ke mereka
+    const incomingRequests = isAdmin
+      ? await this.accessRequestRepo.find({
+          where: { status: 'pending' },
+          order: { createdAt: 'DESC' },
+        })
+      : await this.accessRequestRepo.find({
+          where: { owner: { id: userId }, status: 'pending' },
+          order: { createdAt: 'DESC' },
+        });
+
+    // Notifikasi untuk requester: request mereka yang sudah di-approve/reject
+    const myUpdatedRequests = await this.accessRequestRepo.find({
+      where: [
+        { requester: { id: userId }, status: 'approved' },
+        { requester: { id: userId }, status: 'rejected' },
+      ],
+      order: { createdAt: 'DESC' },
+    });
+
+    return {
+      incoming: incomingRequests.map((r) => ({
+        id: r.id,
+        type: 'incoming' as const,
+        requesterName: r.requester?.name || r.requester?.email || 'Unknown',
+        requesterEmail: r.requester?.email || '',
+        resourceName: r.folder?.name || r.file?.name || 'Unknown',
+        resourceType: r.folder ? 'folder' : 'file',
+        status: r.status,
+        createdAt: r.createdAt,
+      })),
+      updates: myUpdatedRequests.map((r) => ({
+        id: r.id,
+        type: 'update' as const,
+        resourceName: r.folder?.name || r.file?.name || 'Unknown',
+        resourceType: r.folder ? 'folder' : 'file',
+        status: r.status,
+        createdAt: r.createdAt,
+      })),
+    };
   }
 
 }
