@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
     password VARCHAR(255) NOT NULL,
     name VARCHAR(255) NOT NULL,
     role_id UUID,
+    unit VARCHAR(50) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_users_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE SET NULL
@@ -43,10 +44,13 @@ CREATE TABLE IF NOT EXISTS folders (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
     parent_id UUID,
+    unit VARCHAR(50) DEFAULT 'general',
+    owner_id UUID,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP,
-    CONSTRAINT fk_folders_parent FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE SET NULL
+    CONSTRAINT fk_folders_parent FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE SET NULL,
+    CONSTRAINT fk_folders_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- ============================================
@@ -66,6 +70,27 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 -- ============================================
+-- TABLE: access_requests
+-- ============================================
+CREATE TABLE IF NOT EXISTS access_requests (
+    id SERIAL PRIMARY KEY,
+    requester_id UUID NOT NULL,
+    folder_id UUID,
+    file_id UUID,
+    owner_id UUID NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_access_requester FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_access_folder FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
+    CONSTRAINT fk_access_file FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    CONSTRAINT fk_access_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT chk_access_target CHECK (
+        (folder_id IS NOT NULL AND file_id IS NULL) OR 
+        (folder_id IS NULL AND file_id IS NOT NULL)
+    )
+);
+
+-- ============================================
 -- TABLE: folder_permissions
 -- ============================================
 CREATE TABLE IF NOT EXISTS folder_permissions (
@@ -77,6 +102,7 @@ CREATE TABLE IF NOT EXISTS folder_permissions (
     can_create BOOLEAN NOT NULL DEFAULT false,
     can_update BOOLEAN NOT NULL DEFAULT false,
     can_delete BOOLEAN NOT NULL DEFAULT false,
+    can_download BOOLEAN NOT NULL DEFAULT false,
     expires_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
