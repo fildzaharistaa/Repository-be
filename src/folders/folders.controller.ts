@@ -36,6 +36,11 @@ export class FoldersController {
     return this.foldersService.findAllAccessible(req.user);
   }
 
+  @Get('shared/tree')
+  async getSharedTree(@Request() req: RequestWithUser) {
+    return this.foldersService.getSharedTree(req.user);
+  }
+
   @Get('admin/all')
   @UseGuards(RolesGuard)
   @Roles('admin')

@@ -147,17 +147,39 @@ export class FoldersService {
       return [];
     }
 
-    // Get all accessible folders
+    // Get only OWNED folders (not shared ones)
     const folders = await this.folderRepository.find({
-      where: { id: In(accessibleFolderIds) },
+      where: { id: In(accessibleFolderIds), owner_id: user.id },
       order: { name: 'ASC' },
     });
 
-    // Build tree structure
+    return this.buildTree(folders);
+  }
+
+  async getSharedTree(user: User): Promise<FolderTreeNode[]> {
+    const accessibleFolderIds = await this.getAccessibleFolderIds(user);
+
+    if (accessibleFolderIds.length === 0) {
+      return [];
+    }
+
+    // Get only SHARED folders (user has permission but is NOT the owner)
+    const folders = await this.folderRepository
+      .createQueryBuilder('folder')
+      .where('folder.id IN (:...ids)', { ids: accessibleFolderIds })
+      .andWhere('(folder.owner_id != :userId OR folder.owner_id IS NULL)', { userId: user.id })
+      .andWhere('folder.deleted_at IS NULL')
+      .leftJoinAndSelect('folder.owner', 'owner')
+      .orderBy('folder.name', 'ASC')
+      .getMany();
+
+    return this.buildTreeWithOwner(folders);
+  }
+
+  private buildTree(folders: Folder[]): FolderTreeNode[] {
     const folderMap = new Map<string, FolderTreeNode>();
     const rootFolders: FolderTreeNode[] = [];
 
-    // First pass: create all nodes
     folders.forEach((folder) => {
       folderMap.set(folder.id, {
         id: folder.id,
@@ -169,7 +191,38 @@ export class FoldersService {
       });
     });
 
-    // Second pass: build parent-child relationships
+    folders.forEach((folder) => {
+      const node = folderMap.get(folder.id)!;
+      if (folder.parent_id && folderMap.has(folder.parent_id)) {
+        const parent = folderMap.get(folder.parent_id)!;
+        if (!parent.children) {
+          parent.children = [];
+        }
+        parent.children.push(node);
+      } else {
+        rootFolders.push(node);
+      }
+    });
+
+    return rootFolders;
+  }
+
+  private buildTreeWithOwner(folders: Folder[]): any[] {
+    const folderMap = new Map<string, any>();
+    const rootFolders: any[] = [];
+
+    folders.forEach((folder) => {
+      folderMap.set(folder.id, {
+        id: folder.id,
+        name: folder.name,
+        parent_id: folder.parent_id,
+        created_at: folder.created_at,
+        updated_at: folder.updated_at,
+        owner_name: folder.owner?.name || 'Unknown',
+        children: [],
+      });
+    });
+
     folders.forEach((folder) => {
       const node = folderMap.get(folder.id)!;
       if (folder.parent_id && folderMap.has(folder.parent_id)) {

@@ -55,6 +55,16 @@ export class AccessRequestsController {
   }
 
   // =============================
+  // GET SHARED FILES
+  // =============================
+  @Get('shared-files')
+  getSharedFiles(@Req() req) {
+    return this.accessRequestsService.getSharedFiles(
+      req.user.id
+    );
+  }
+
+  // =============================
   // OWNER LIHAT PENDING REQUEST
   // =============================
   @Get('pending')

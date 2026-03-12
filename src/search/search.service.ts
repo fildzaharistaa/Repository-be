@@ -61,13 +61,13 @@ export class SearchService {
     const accessibleSet = new Set(accessibleFolderIds);
 
     const userRequests = await this.accessRequestsService.getUserRequests(user.id);
-    const pendingFolderRequests = new Set(userRequests.filter(r => r.folder && r.status === 'pending').map(r => r.folder.id));
-    const pendingFileRequests = new Set(userRequests.filter(r => r.file && r.status === 'pending').map(r => r.file.id));
+    const folderRequestsMap = new Map(userRequests.filter(r => r.folder).map(r => [r.folder.id, r.status]));
+    const fileRequestsMap = new Map(userRequests.filter(r => r.file).map(r => [r.file.id, r.status]));
 
     return {
       folders: folders.map(folder => {
         const hasAccess = isAdmin || folder.owner?.id === user.id || accessibleSet.has(folder.id);
-        const requestStatus = pendingFolderRequests.has(folder.id) ? 'pending' : null;
+        const requestStatus = folderRequestsMap.get(folder.id) || null;
         return {
           id: folder.id,
           name: folder.name,
@@ -80,8 +80,14 @@ export class SearchService {
       }),
 
       files: files.map(file => {
-        const hasAccess = isAdmin || file.folder?.owner?.id === user.id || (file.folder && accessibleSet.has(file.folder.id));
-        const requestStatus = pendingFileRequests.has(file.id) ? 'pending' : null;
+        let hasAccess = isAdmin || file.folder?.owner?.id === user.id || (file.folder && accessibleSet.has(file.folder.id));
+        const requestStatus = fileRequestsMap.get(file.id) || null;
+        
+        // If there's an approved file request, they definitely have access
+        if (requestStatus === 'approved') {
+          hasAccess = true;
+        }
+
         return {
           id: file.id,
           name: file.name,

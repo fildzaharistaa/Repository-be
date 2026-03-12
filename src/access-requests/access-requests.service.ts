@@ -190,6 +190,22 @@ export class AccessRequestsService {
         can_delete: permissions?.can_delete ?? false,
       });
 
+    } else if (request.file) {
+      
+      // For file requests, grant read permission on the parent folder
+      // so the user can access the file
+      if (request.file.folder) {
+        await this.folderPermissionRepo.save({
+          user: request.requester,
+          folder: request.file.folder,
+          can_read: true,
+          can_download: permissions?.can_download ?? true,
+          can_create: false,
+          can_update: false,
+          can_delete: false,
+        });
+      }
+
     }
 
     return {
@@ -284,6 +300,27 @@ export class AccessRequestsService {
         createdAt: r.createdAt,
       })),
     };
+  }
+
+  // =============================
+  // GET SHARED FILES
+  // =============================
+  async getSharedFiles(userId: string) {
+    const approvedRequests = await this.accessRequestRepo.find({
+      where: {
+        requester: { id: userId },
+        status: 'approved',
+      },
+      relations: ['file', 'file.folder', 'owner'],
+    });
+
+    // Filter only those that have a file and map them
+    return approvedRequests
+      .filter((r) => r.file)
+      .map((r) => ({
+        ...r.file,
+        owner_name: r.owner?.name || 'Unknown',
+      }));
   }
 
 }
