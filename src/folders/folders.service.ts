@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm';
-import { Folder, FolderPermission, User, Role } from '../entities';
+import { Folder, FolderPermission, User, Role, File } from '../entities';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
 
@@ -27,6 +27,8 @@ export class FoldersService {
     private permissionRepository: Repository<FolderPermission>,
     @InjectRepository(Role)
     private roleRepository: Repository<Role>,
+    @InjectRepository(File)
+    private fileRepository: Repository<File>,
   ) {}
 
   async create(createFolderDto: CreateFolderDto, userId: string): Promise<Folder> {
@@ -300,7 +302,24 @@ export class FoldersService {
 
   async remove(id: string): Promise<void> {
     const folder = await this.findOne(id);
+    // Cascade soft-delete: delete all children recursively
+    await this.cascadeSoftDelete(folder.id);
     await this.folderRepository.softRemove(folder);
+  }
+
+  private async cascadeSoftDelete(folderId: string): Promise<void> {
+    // Soft-delete all files in this folder
+    const files = await this.fileRepository.find({ where: { folder_id: folderId } });
+    if (files.length > 0) {
+      await this.fileRepository.softRemove(files);
+    }
+
+    // Find all child folders and recursively soft-delete
+    const children = await this.folderRepository.find({ where: { parent_id: folderId } });
+    for (const child of children) {
+      await this.cascadeSoftDelete(child.id);
+      await this.folderRepository.softRemove(child);
+    }
   }
 
   public async getAccessibleFolderIds(user: User): Promise<string[]> {

@@ -17,6 +17,7 @@ import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
 import { SearchModule } from './search/search.module';
 import { StatsModule } from './stats/stats.module';
+import { RecycleBinModule } from './recycle-bin/recycle-bin.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { StatsModule } from './stats/stats.module';
     AccessRequestsModule,
     SearchModule,
     StatsModule,
+    RecycleBinModule,
   ],
   controllers: [AppController],
   providers: [
