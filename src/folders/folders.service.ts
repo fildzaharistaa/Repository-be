@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm';
-import { Folder, FolderPermission, User } from '../entities';
+import { Folder, FolderPermission, User, Role } from '../entities';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
 
@@ -25,6 +25,8 @@ export class FoldersService {
     private folderRepository: Repository<Folder>,
     @InjectRepository(FolderPermission)
     private permissionRepository: Repository<FolderPermission>,
+    @InjectRepository(Role)
+    private roleRepository: Repository<Role>,
   ) {}
 
   async create(createFolderDto: CreateFolderDto, userId: string): Promise<Folder> {
@@ -62,6 +64,57 @@ export class FoldersService {
       can_delete: true,
       can_download: true,
     });
+
+    // Inherit permissions from parent folder if exists
+    if (createFolderDto.parent_id) {
+      const parentPermissions = await this.permissionRepository.find({
+        where: { folder_id: createFolderDto.parent_id }
+      });
+      for (const perm of parentPermissions) {
+        // Skip copying the owner's permission since we already added the new owner
+        if (perm.user_id === userId) continue;
+
+        // Save copied permission
+        await this.permissionRepository.save({
+          folder_id: savedFolder.id,
+          user_id: perm.user_id,
+          role_id: perm.role_id,
+          can_read: perm.can_read,
+          can_create: perm.can_create,
+          can_update: perm.can_update,
+          can_delete: perm.can_delete,
+          can_download: perm.can_download,
+        });
+      }
+    }
+
+    // Auto-share with specified roles (e.g. dosen, tendik)
+    if (createFolderDto.share_with_roles && createFolderDto.share_with_roles.length > 0) {
+      for (const roleName of createFolderDto.share_with_roles) {
+        const role = await this.roleRepository.findOne({
+          where: { name: roleName.toLowerCase() as any },
+        });
+
+        if (role) {
+          // Check if permission already exists for this role+folder
+          const existing = await this.permissionRepository.findOne({
+            where: { folder_id: savedFolder.id, role_id: role.id },
+          });
+
+          if (!existing) {
+            await this.permissionRepository.save({
+              folder_id: savedFolder.id,
+              role_id: role.id,
+              can_read: true,
+              can_create: true,
+              can_update: true,
+              can_delete: true,
+              can_download: true,
+            });
+          }
+        }
+      }
+    }
 
     return savedFolder;
   }
@@ -147,9 +200,9 @@ export class FoldersService {
       return [];
     }
 
-    // Get only OWNED folders (not shared ones)
+    // Get ALL accessible folders (both owned and shared) so the sidebar tree is complete
     const folders = await this.folderRepository.find({
-      where: { id: In(accessibleFolderIds), owner_id: user.id },
+      where: { id: In(accessibleFolderIds) },
       order: { name: 'ASC' },
     });
 

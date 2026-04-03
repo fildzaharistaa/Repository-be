@@ -1,4 +1,4 @@
-import { IsString, IsUUID, IsOptional, MinLength } from 'class-validator';
+import { IsString, IsUUID, IsOptional, MinLength, IsArray } from 'class-validator';
 
 export class CreateFolderDto {
   @IsString()
@@ -8,5 +8,10 @@ export class CreateFolderDto {
   @IsUUID()
   @IsOptional()
   parent_id?: string | null;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  share_with_roles?: string[];
 }
 

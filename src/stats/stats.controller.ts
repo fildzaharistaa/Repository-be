@@ -161,7 +161,7 @@ export class StatsController {
 
     const totalSize = parseInt(storageResult?.totalSize || '0');
 
-    // Recent files milik user ini (15 terbaru)
+    //  milik user ini (15 terbaru)
     const recentFiles = await this.fileRepository
       .createQueryBuilder('file')
       .innerJoinAndSelect('file.folder', 'folder')
