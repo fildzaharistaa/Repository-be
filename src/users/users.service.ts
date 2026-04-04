@@ -89,6 +89,49 @@ export class UsersService {
     return userWithRole;
   }
 
+  async importExcel(usersData: any[]): Promise<{ success: number; failed: number; errors: any[] }> {
+    let success = 0;
+    let failed = 0;
+    const errors: any[] = [];
+
+    // Assuming we have basic string roles to matching role_ids
+    const roles = await this.roleRepository.find();
+    
+    // Process sequentially to handle conflicts and hashes properly
+    for (const data of usersData) {
+      if (!data.name || !data.email) {
+        failed++;
+        errors.push({ email: data.email || 'Unknown', error: 'Missing name or email' });
+        continue;
+      }
+      
+      try {
+        const existingUser = await this.findByEmail(data.email);
+        if (existingUser) {
+          failed++;
+          errors.push({ email: data.email, error: 'User already exists' });
+          continue;
+        }
+
+        const role = roles.find(r => r.name === (data.role || '').toLowerCase()) || roles.find(r => r.name === 'tendik');
+        
+        await this.create({
+          email: data.email,
+          name: data.name,
+          password: data.password || 'password123', // Default password
+          role_id: role ? role.id : undefined,
+        });
+        
+        success++;
+      } catch (err) {
+        failed++;
+        errors.push({ email: data.email, error: err.message });
+      }
+    }
+
+    return { success, failed, errors };
+  }
+
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
     const user = await this.findOne(id);
 

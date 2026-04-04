@@ -112,6 +112,34 @@ export class FilesService {
     return file;
   }
 
+  async rename(id: string, name: string, user: User): Promise<File> {
+    const file = await this.fileRepository.findOne({
+      where: { id },
+      relations: ['folder'],
+    });
+
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    // Check update permission on parent folder
+    const hasPermission = await this.foldersService.checkPermission(
+      user.id,
+      user.role_id,
+      file.folder_id,
+      'update',
+    );
+
+    if (!hasPermission) {
+      throw new ForbiddenException(
+        'You do not have update permission for this file',
+      );
+    }
+
+    file.name = name;
+    return this.fileRepository.save(file);
+  }
+
   async remove(id: string, user: User): Promise<void> {
     const file = await this.fileRepository.findOne({
       where: { id },

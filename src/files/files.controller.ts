@@ -2,8 +2,10 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Param,
   Delete,
+  Body,
   UseGuards,
   Request,
   UseInterceptors,
@@ -13,6 +15,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { FilesService } from './files.service';
+import { UpdateFileDto } from './update-file.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import type { RequestWithUser } from '../common/interfaces/request-with-user.interface';
 import { diskStorage } from 'multer';
@@ -75,10 +78,20 @@ export class FilesController {
     res.download(file.path, file.name);
   }
 
+  @Patch(':id')
+  async rename(
+    @Param('id') id: string,
+    @Body() updateFileDto: UpdateFileDto,
+    @Request() req: RequestWithUser,
+  ) {
+    return this.filesService.rename(id, updateFileDto.name, req.user);
+  }
+
   @Delete(':id')
   async remove(@Param('id') id: string, @Request() req: RequestWithUser) {
     await this.filesService.remove(id, req.user);
     return { message: 'File deleted successfully' };
   }
 }
+
 

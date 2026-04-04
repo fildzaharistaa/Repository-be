@@ -13,5 +13,9 @@ export class CreateFolderDto {
   @IsString({ each: true })
   @IsOptional()
   share_with_roles?: string[];
+
+  @IsArray()
+  @IsOptional()
+  user_permissions?: any[];
 }
 

@@ -118,6 +118,33 @@ export class FoldersService {
       }
     }
 
+    // Assign specific user permissions 
+    if (createFolderDto.user_permissions && createFolderDto.user_permissions.length > 0) {
+      for (const perm of createFolderDto.user_permissions) {
+        const existing = await this.permissionRepository.findOne({
+          where: { folder_id: savedFolder.id, user_id: perm.user_id },
+        });
+
+        if (existing) {
+          existing.can_read = !!perm.can_read;
+          existing.can_create = !!perm.can_create;
+          existing.can_update = !!perm.can_update;
+          existing.can_delete = !!perm.can_delete;
+          await this.permissionRepository.save(existing);
+        } else {
+          await this.permissionRepository.save({
+            folder_id: savedFolder.id,
+            user_id: perm.user_id,
+            can_read: !!perm.can_read,
+            can_create: !!perm.can_create,
+            can_update: !!perm.can_update,
+            can_delete: !!perm.can_delete,
+            can_download: !!perm.can_read,
+          });
+        }
+      }
+    }
+
     return savedFolder;
   }
 
@@ -296,7 +323,67 @@ export class FoldersService {
 
   async update(id: string, updateFolderDto: UpdateFolderDto): Promise<Folder> {
     const folder = await this.findOne(id);
-    Object.assign(folder, updateFolderDto);
+    
+    // Update name if provided
+    if (updateFolderDto.name) {
+      folder.name = updateFolderDto.name;
+    }
+
+    // Handle new share_with_roles assignments
+    if (updateFolderDto.share_with_roles && updateFolderDto.share_with_roles.length > 0) {
+      for (const roleName of updateFolderDto.share_with_roles) {
+        const role = await this.roleRepository.findOne({
+          where: { name: roleName.toLowerCase() as any },
+        });
+
+        if (role) {
+          // Check if permission already exists for this role+folder
+          const existing = await this.permissionRepository.findOne({
+            where: { folder_id: folder.id, role_id: role.id },
+          });
+
+          if (!existing) {
+            await this.permissionRepository.save({
+              folder_id: folder.id,
+              role_id: role.id,
+              can_read: true,
+              can_create: true,
+              can_update: true,
+              can_delete: true,
+              can_download: true,
+            });
+          }
+        }
+      }
+    }
+
+    // Handle specific user permissions 
+    if (updateFolderDto.user_permissions && updateFolderDto.user_permissions.length > 0) {
+      for (const perm of updateFolderDto.user_permissions) {
+        const existing = await this.permissionRepository.findOne({
+          where: { folder_id: folder.id, user_id: perm.user_id },
+        });
+
+        if (existing) {
+          existing.can_read = !!perm.can_read;
+          existing.can_create = !!perm.can_create;
+          existing.can_update = !!perm.can_update;
+          existing.can_delete = !!perm.can_delete;
+          await this.permissionRepository.save(existing);
+        } else {
+          await this.permissionRepository.save({
+            folder_id: folder.id,
+            user_id: perm.user_id,
+            can_read: !!perm.can_read,
+            can_create: !!perm.can_create,
+            can_update: !!perm.can_update,
+            can_delete: !!perm.can_delete,
+            can_download: !!perm.can_read,
+          });
+        }
+      }
+    }
+
     return this.folderRepository.save(folder);
   }
 

@@ -39,8 +39,6 @@ export class UsersController {
   }
 
   @Get()
-  @UseGuards(RolesGuard)
-  @Roles('admin')
   async findAll(@Query() paginationDto: PaginationDto) {
     return this.usersService.findAll(
       paginationDto.page,
@@ -53,6 +51,13 @@ export class UsersController {
   @Roles('admin')
   async create(@Body() createUserDto: CreateUserDto) {
     return this.usersService.create(createUserDto);
+  }
+
+  @Post('import-excel')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  async importExcel(@Body() usersData: any[]) {
+    return this.usersService.importExcel(usersData);
   }
 
   @Patch(':id')
