@@ -6,6 +6,7 @@ import { AccessRequest } from './access-request.entity';
 import { Folder } from '../entities/folder.entity';
 import { File } from '../entities/file.entity';
 import { User } from '../entities/user.entity';
+import { Role } from '../entities/role.entity';
 import { FolderPermission } from 'src/entities/folder-permission.entity';
 
 @Module({
@@ -15,6 +16,7 @@ import { FolderPermission } from 'src/entities/folder-permission.entity';
       Folder,
       File,
       User,
+      Role,
       FolderPermission
     ])
   ],

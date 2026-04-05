@@ -5,6 +5,7 @@ import { AccessRequest } from './access-request.entity';
 import { Folder } from '../entities/folder.entity';
 import { File } from '../entities/file.entity';
 import { User } from '../entities/user.entity';
+import { Role } from '../entities/role.entity';
 import { FolderPermission } from '../entities/folder-permission.entity';
 
 @Injectable()
@@ -25,7 +26,20 @@ export class AccessRequestsService {
 
     @InjectRepository(User)
     private userRepo: Repository<User>,
+
+    @InjectRepository(Role)
+    private roleRepository: Repository<Role>,
   ) {}
+
+  private mapRoleLabelToName(label: string): string {
+    const norm = label.toLowerCase().trim();
+    if (norm === 'wakil dekan 1' || norm === 'wd 1' || norm === 'wd1') return 'wd1';
+    if (norm === 'wakil dekan 2' || norm === 'wd 2' || norm === 'wd2') return 'wd2';
+    if (norm === 'wakil dekan 3' || norm === 'wd 3' || norm === 'wd3') return 'wd3';
+    if (norm.includes('dosen')) return 'dosen';
+    if (norm.includes('tendik')) return 'tendik';
+    return norm;
+  }
 
   // =============================
   // USER REQUEST ACCESS
@@ -277,8 +291,44 @@ export class AccessRequestsService {
         { requester: { id: userId }, status: 'approved' },
         { requester: { id: userId }, status: 'rejected' },
       ],
+      relations: ['folder', 'file'],
       order: { createdAt: 'DESC' },
     });
+
+    // Notifikasi untuk direct share: Folder yang dibagikan langsung tanpa request
+    const directShares = await this.folderPermissionRepo.find({
+      where: { user_id: userId },
+      relations: ['folder', 'folder.owner'],
+      order: { created_at: 'DESC' },
+      take: 20
+    });
+
+    const filteredDirectShares = directShares.filter(
+      (p) => p.folder && p.folder.owner && p.folder.owner.id !== userId
+    );
+
+    const normalUpdates = myUpdatedRequests.map((r) => ({
+      id: r.id,
+      type: 'update' as const,
+      resourceName: r.folder?.name || r.file?.name || 'Unknown',
+      resourceType: r.folder ? 'folder' : 'file' as const,
+      status: r.status,
+      createdAt: r.createdAt.toISOString(),
+    }));
+
+    const directShareUpdates = filteredDirectShares.map((p) => ({
+      id: p.id ? Number(p.id.replace(/\D/g, '').substring(0, 8)) + 1000000 : Math.floor(Math.random() * 1000000), // Fake integer ID for UI render keys
+      type: 'update' as const,
+      resourceName: p.folder?.name || 'Unknown',
+      resourceType: 'folder' as const,
+      status: 'approved',
+      createdAt: p.created_at.toISOString(),
+    }));
+
+    // Gabungkan notifikasi update dan urutkan berdasarkan waktu
+    const allUpdates = [...normalUpdates, ...directShareUpdates].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
 
     return {
       incoming: incomingRequests.map((r) => ({
@@ -289,16 +339,9 @@ export class AccessRequestsService {
         resourceName: r.folder?.name || r.file?.name || 'Unknown',
         resourceType: r.folder ? 'folder' : 'file',
         status: r.status,
-        createdAt: r.createdAt,
+        createdAt: r.createdAt.toISOString(),
       })),
-      updates: myUpdatedRequests.map((r) => ({
-        id: r.id,
-        type: 'update' as const,
-        resourceName: r.folder?.name || r.file?.name || 'Unknown',
-        resourceType: r.folder ? 'folder' : 'file',
-        status: r.status,
-        createdAt: r.createdAt,
-      })),
+      updates: allUpdates,
     };
   }
 
@@ -321,6 +364,104 @@ export class AccessRequestsService {
         ...r.file,
         owner_name: r.owner?.name || 'Unknown',
       }));
+  }
+
+  // =============================
+  // DIRECT FILE SHARE (BY OWNER)
+  // ============= ================
+  async directShareFile(
+    fileId: string,
+    data: { share_with_roles?: string[]; user_permissions?: any[] },
+    ownerId: string
+  ) {
+    const file = await this.fileRepo.findOne({
+      where: { id: fileId },
+      relations: ['folder', 'folder.owner']
+    });
+
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    if (file.folder?.owner?.id !== ownerId) {
+      throw new ForbiddenException('You do not own this file');
+    }
+
+    const results: AccessRequest[] = [];
+    const targetUserIds = new Set<string>();
+
+    // 1. Process specific user permissions
+    if (data.user_permissions) {
+      for (const p of data.user_permissions) {
+        targetUserIds.add(p.user_id);
+      }
+    }
+
+    // 2. Process roles to get more users
+    if (data.share_with_roles) {
+      for (const roleName of data.share_with_roles) {
+        const mappedName = this.mapRoleLabelToName(roleName);
+        const role = await this.roleRepository.findOne({
+          where: { name: mappedName as any }
+        });
+        if (role) {
+          const usersInRole = await this.userRepo.find({
+            where: { role_id: role.id }
+          });
+          for (const u of usersInRole) {
+            if (u.id !== ownerId) {
+              targetUserIds.add(u.id);
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Grant access to all identified users
+    for (const userId of targetUserIds) {
+      const targetUser = await this.userRepo.findOne({ where: { id: userId } });
+      if (!targetUser) continue;
+
+      let request = await this.accessRequestRepo.findOne({
+        where: { requester: { id: userId }, file: { id: fileId } }
+      });
+
+      if (!request) {
+        request = this.accessRequestRepo.create({
+          requester: targetUser,
+          file: file,
+          owner: file.folder.owner,
+          status: 'approved'
+        });
+      } else {
+        request.status = 'approved';
+      }
+
+      await this.accessRequestRepo.save(request);
+
+      // Ensure they can "see" the parent folder to list the file
+      const existingFolderPerm = await this.folderPermissionRepo.findOne({
+        where: { user_id: userId, folder_id: file.folder_id }
+      });
+
+      if (!existingFolderPerm) {
+        await this.folderPermissionRepo.save({
+          user_id: userId,
+          folder_id: file.folder_id,
+          can_read: true,
+          can_create: false,
+          can_update: false,
+          can_delete: false
+        });
+      }
+
+      results.push(request);
+    }
+
+    return {
+      message: `${results.length} users granted access to file`,
+      count: results.length
+    };
   }
 
 }

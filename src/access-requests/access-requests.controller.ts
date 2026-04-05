@@ -65,6 +65,22 @@ export class AccessRequestsController {
   }
 
   // =============================
+  // DIRECT FILE SHARE (BY OWNER)
+  // =============================
+  @Post('files/:id/share')
+  async shareFile(
+    @Param('id') fileId: string,
+    @Body() body: any,
+    @Req() req
+  ) {
+    return this.accessRequestsService.directShareFile(
+      fileId,
+      body,
+      req.user.id
+    );
+  }
+
+  // =============================
   // OWNER LIHAT PENDING REQUEST
   // =============================
   @Get('pending')

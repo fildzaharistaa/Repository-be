@@ -31,6 +31,16 @@ export class FoldersService {
     private fileRepository: Repository<File>,
   ) {}
 
+  private mapRoleLabelToName(label: string): string {
+    const norm = label.toLowerCase().trim();
+    if (norm === 'wakil dekan 1' || norm === 'wd 1' || norm === 'wd1') return 'wd1';
+    if (norm === 'wakil dekan 2' || norm === 'wd 2' || norm === 'wd2') return 'wd2';
+    if (norm === 'wakil dekan 3' || norm === 'wd 3' || norm === 'wd3') return 'wd3';
+    if (norm.includes('dosen')) return 'dosen';
+    if (norm.includes('tendik')) return 'tendik';
+    return norm;
+  }
+
   async create(createFolderDto: CreateFolderDto, userId: string): Promise<Folder> {
     if (createFolderDto.parent_id) {
       const parent = await this.folderRepository.findOne({
@@ -93,8 +103,9 @@ export class FoldersService {
     // Auto-share with specified roles (e.g. dosen, tendik)
     if (createFolderDto.share_with_roles && createFolderDto.share_with_roles.length > 0) {
       for (const roleName of createFolderDto.share_with_roles) {
+        const mappedName = this.mapRoleLabelToName(roleName);
         const role = await this.roleRepository.findOne({
-          where: { name: roleName.toLowerCase() as any },
+          where: { name: mappedName as any },
         });
 
         if (role) {
@@ -229,11 +240,14 @@ export class FoldersService {
       return [];
     }
 
-    // Get ALL accessible folders (both owned and shared) so the sidebar tree is complete
-    const folders = await this.folderRepository.find({
-      where: { id: In(accessibleFolderIds) },
-      order: { name: 'ASC' },
-    });
+    // Get ONLY OWNED folders so it doesn't mix with Shared Folders
+    const folders = await this.folderRepository
+      .createQueryBuilder('folder')
+      .where('folder.id IN (:...ids)', { ids: accessibleFolderIds })
+      .andWhere('folder.owner_id = :userId', { userId: user.id })
+      .andWhere('folder.deleted_at IS NULL')
+      .orderBy('folder.name', 'ASC')
+      .getMany();
 
     return this.buildTree(folders);
   }
@@ -332,8 +346,9 @@ export class FoldersService {
     // Handle new share_with_roles assignments
     if (updateFolderDto.share_with_roles && updateFolderDto.share_with_roles.length > 0) {
       for (const roleName of updateFolderDto.share_with_roles) {
+        const mappedName = this.mapRoleLabelToName(roleName);
         const role = await this.roleRepository.findOne({
-          where: { name: roleName.toLowerCase() as any },
+          where: { name: mappedName as any },
         });
 
         if (role) {
@@ -412,11 +427,11 @@ export class FoldersService {
   public async getAccessibleFolderIds(user: User): Promise<string[]> {
     const now = new Date();
 
-    // Get folder IDs where user has read permission (direct or via role)
+    // Get folder IDs where user has ANY permission (read, create, update, delete)
     const permissions = await this.permissionRepository
       .createQueryBuilder('fp')
       .select('fp.folder_id', 'folder_id')
-      .where('fp.can_read = :canRead', { canRead: true })
+      .where('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere(
         '(fp.user_id = :userId OR fp.role_id = :roleId)',
         { userId: user.id, roleId: user.role_id },
