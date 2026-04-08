@@ -47,7 +47,8 @@ export class AccessRequestsService {
   async requestAccess(
     userId: string,
     folderId?: string,
-    fileId?: string
+    fileId?: string,
+    message?: string
   ) {
 
     if (!folderId && !fileId) {
@@ -90,7 +91,8 @@ export class AccessRequestsService {
         requester,
         folder,
         owner: folder.owner,
-        status: 'pending'
+        status: 'pending',
+        message: message || null
       });
 
       return this.accessRequestRepo.save(request);
@@ -126,7 +128,8 @@ export class AccessRequestsService {
         requester,
         file,
         owner: file.folder.owner,
-        status: 'pending'
+        status: 'pending',
+        message: message || null
       });
 
       return this.accessRequestRepo.save(request);
@@ -173,7 +176,8 @@ export class AccessRequestsService {
   async approveRequest(
     requestId: number,
     ownerId: string,
-    permissions: any
+    permissions: any,
+    responseMessage?: string
   ) {
 
     const request = await this.accessRequestRepo.findOne({
@@ -190,6 +194,7 @@ export class AccessRequestsService {
     }
 
     request.status = 'approved';
+    request.response_message = responseMessage || null;
     await this.accessRequestRepo.save(request);
 
     if (request.folder) {
@@ -232,7 +237,8 @@ export class AccessRequestsService {
   // =============================
   async rejectRequest(
     requestId: number,
-    ownerId: string
+    ownerId: string,
+    responseMessage?: string
   ) {
 
     const request = await this.accessRequestRepo.findOne({
@@ -249,6 +255,7 @@ export class AccessRequestsService {
     }
 
     request.status = 'rejected';
+    request.response_message = responseMessage || null;
 
     return this.accessRequestRepo.save(request);
   }
@@ -313,6 +320,7 @@ export class AccessRequestsService {
       resourceName: r.folder?.name || r.file?.name || 'Unknown',
       resourceType: r.folder ? 'folder' : 'file' as const,
       status: r.status,
+      response_message: r.response_message || null,
       createdAt: r.createdAt.toISOString(),
     }));
 
@@ -339,6 +347,7 @@ export class AccessRequestsService {
         resourceName: r.folder?.name || r.file?.name || 'Unknown',
         resourceType: r.folder ? 'folder' : 'file',
         status: r.status,
+        message: r.message || null,
         createdAt: r.createdAt.toISOString(),
       })),
       updates: allUpdates,
@@ -371,7 +380,7 @@ export class AccessRequestsService {
   // ============= ================
   async directShareFile(
     fileId: string,
-    data: { share_with_roles?: string[]; user_permissions?: any[] },
+    data: { share_with_roles?: string[]; user_permissions?: any[]; message?: string },
     ownerId: string
   ) {
     const file = await this.fileRepo.findOne({
@@ -431,10 +440,12 @@ export class AccessRequestsService {
           requester: targetUser,
           file: file,
           owner: file.folder.owner,
-          status: 'approved'
+          status: 'approved',
+          message: data.message || null
         });
       } else {
         request.status = 'approved';
+        if (data.message) request.message = data.message;
       }
 
       await this.accessRequestRepo.save(request);

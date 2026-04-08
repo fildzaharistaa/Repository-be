@@ -35,12 +35,14 @@ export class AccessRequestsController {
   requestAccess(
     @Body('folderId') folderId: string,
     @Body('fileId') fileId: string,
+    @Body('message') message: string,
     @Req() req
   ) {
     return this.accessRequestsService.requestAccess(
       req.user.id,
       folderId,
-      fileId
+      fileId,
+      message
     );
   }
 
@@ -112,7 +114,8 @@ export class AccessRequestsController {
     return this.accessRequestsService.approveRequest(
       Number(id),
       req.user.id,
-      body
+      body,
+      body?.response_message
     );
   }
 
@@ -122,11 +125,13 @@ export class AccessRequestsController {
   @Patch(':id/reject')
   reject(
     @Param('id') id: string,
+    @Body('response_message') responseMessage: string,
     @Req() req
   ) {
     return this.accessRequestsService.rejectRequest(
       Number(id),
-      req.user.id
+      req.user.id,
+      responseMessage
     );
   }
 

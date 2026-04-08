@@ -27,6 +27,12 @@ export class AccessRequest {
   })
   status: 'pending' | 'approved' | 'rejected';
 
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  message?: string | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  response_message?: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS access_requests (
     file_id UUID,
     owner_id UUID NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    message VARCHAR(500),
+    response_message VARCHAR(500),
     "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_access_requester FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_access_folder FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
