@@ -27,11 +27,32 @@ export class AccessRequest {
   })
   status: 'pending' | 'approved' | 'rejected';
 
+  @Column({ type: 'varchar', length: 20, default: 'access' })
+  request_type: 'access' | 'hierarchy';
+
+  @Column({ type: 'int', nullable: true })
+  requested_depth: number | null;
+
   @Column({ type: 'varchar', length: 500, nullable: true })
   message?: string | null;
 
   @Column({ type: 'varchar', length: 500, nullable: true })
   response_message?: string | null;
+
+  @Column({ type: 'boolean', default: true })
+  can_read: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  can_download: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  can_create: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  can_update: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  can_delete: boolean;
 
   @CreateDateColumn()
   createdAt: Date;

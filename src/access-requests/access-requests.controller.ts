@@ -135,4 +135,44 @@ export class AccessRequestsController {
     );
   }
 
+  // =============================
+  // USER REQUEST HIERARCHY INCREASE
+  // =============================
+  @Post('hierarchy')
+  requestHierarchy(
+    @Body('requested_depth') requestedDepth: number,
+    @Body('message') message: string,
+    @Req() req
+  ) {
+    return this.accessRequestsService.requestHierarchyIncrease(
+      req.user.id,
+      requestedDepth,
+      message
+    );
+  }
+
+  // =============================
+  // ADMIN APPROVE HIERARCHY REQUEST
+  // =============================
+  @Patch(':id/approve-hierarchy')
+  approveHierarchy(
+    @Param('id') id: string,
+    @Body('response_message') responseMessage: string,
+    @Req() req
+  ) {
+    return this.accessRequestsService.approveHierarchyRequest(
+      Number(id),
+      req.user.id,
+      responseMessage
+    );
+  }
+
+  // =============================
+  // GET PENDING HIERARCHY REQUESTS
+  // =============================
+  @Get('hierarchy/pending')
+  getPendingHierarchy() {
+    return this.accessRequestsService.getPendingHierarchyRequests();
+  }
+
 }

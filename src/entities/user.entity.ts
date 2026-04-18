@@ -34,6 +34,9 @@ email: string;
   @OneToMany(() => Folder, (folder) => folder.owner)
   ownedFolders: Folder[];
 
+  @Column({ type: 'int', nullable: true })
+  max_folder_depth: number | null;
+
   @CreateDateColumn()
   created_at: Date;
 

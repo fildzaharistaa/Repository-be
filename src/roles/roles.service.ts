@@ -33,5 +33,9 @@ export class RolesService {
       where: { name },
     });
   }
+  async updateRoleDepth(roleIds: string[], maxDepth: number): Promise<void> {
+    if (roleIds.length === 0) return;
+    await this.roleRepository.update(roleIds, { max_folder_depth: maxDepth });
+  }
 }
 

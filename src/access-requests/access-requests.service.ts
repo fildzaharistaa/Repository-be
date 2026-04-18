@@ -7,6 +7,7 @@ import { File } from '../entities/file.entity';
 import { User } from '../entities/user.entity';
 import { Role } from '../entities/role.entity';
 import { FolderPermission } from '../entities/folder-permission.entity';
+import { SystemSetting } from '../entities/system-setting.entity';
 
 @Injectable()
 export class AccessRequestsService {
@@ -29,6 +30,9 @@ export class AccessRequestsService {
 
     @InjectRepository(Role)
     private roleRepository: Repository<Role>,
+
+    @InjectRepository(SystemSetting)
+    private settingRepository: Repository<SystemSetting>,
   ) {}
 
   private mapRoleLabelToName(label: string): string {
@@ -348,6 +352,8 @@ export class AccessRequestsService {
         resourceType: r.folder ? 'folder' : 'file',
         status: r.status,
         message: r.message || null,
+        request_type: r.request_type || 'access',
+        requested_depth: r.requested_depth || null,
         createdAt: r.createdAt.toISOString(),
       })),
       updates: allUpdates,
@@ -372,6 +378,11 @@ export class AccessRequestsService {
       .map((r) => ({
         ...r.file,
         owner_name: r.owner?.name || 'Unknown',
+        can_read: r.can_read,
+        can_download: r.can_download,
+        can_create: false,
+        can_update: false,
+        can_delete: false,
       }));
   }
 
@@ -398,11 +409,13 @@ export class AccessRequestsService {
 
     const results: AccessRequest[] = [];
     const targetUserIds = new Set<string>();
+    const userPermsMap = new Map<string, any>();
 
     // 1. Process specific user permissions
     if (data.user_permissions) {
       for (const p of data.user_permissions) {
         targetUserIds.add(p.user_id);
+        userPermsMap.set(p.user_id, p);
       }
     }
 
@@ -435,17 +448,31 @@ export class AccessRequestsService {
         where: { requester: { id: userId }, file: { id: fileId } }
       });
 
+      const userPerms = userPermsMap.get(userId) || {
+        can_read: true, can_download: false, can_create: false, can_update: false, can_delete: false
+      };
+
       if (!request) {
         request = this.accessRequestRepo.create({
           requester: targetUser,
           file: file,
           owner: file.folder.owner,
           status: 'approved',
-          message: data.message || null
+          response_message: data.message || null,
+          can_read: userPerms.can_read ?? true,
+          can_download: userPerms.can_download ?? false,
+          can_create: false,
+          can_update: false,
+          can_delete: false,
         });
       } else {
         request.status = 'approved';
-        if (data.message) request.message = data.message;
+        if (data.message) request.response_message = data.message;
+        request.can_read = userPerms.can_read ?? true;
+        request.can_download = userPerms.can_download ?? false;
+        request.can_create = false;
+        request.can_update = false;
+        request.can_delete = false;
       }
 
       await this.accessRequestRepo.save(request);
@@ -475,4 +502,105 @@ export class AccessRequestsService {
     };
   }
 
+  // =============================
+  // USER REQUEST HIERARCHY INCREASE
+  // =============================
+  async requestHierarchyIncrease(
+    userId: string,
+    requestedDepth: number,
+    message?: string,
+  ) {
+    const requester = await this.userRepo.findOne({
+      where: { id: userId },
+      relations: ['role'],
+    });
+    if (!requester) throw new NotFoundException('User not found');
+    
+    const roleName = requester.role?.name?.toLowerCase() || '';
+    if (roleName.includes('dosen') || roleName.includes('tendik')) {
+      throw new ForbiddenException('Role Dosen dan Tendik tidak diizinkan untuk request tambah kedalaman folder');
+    }
+
+    // Find any admin user to be the "owner" of this request
+    const adminRole = await this.roleRepository.findOne({ 
+      where: [
+        { name: 'Super Admin' as any },
+        { name: 'admin' as any },
+        { name: 'superadmin' as any },
+        { name: 'super admin' as any }
+      ]
+    });
+    if (!adminRole) throw new NotFoundException('Admin role not found');
+
+    const adminUser = await this.userRepo.findOne({ where: { role_id: adminRole.id } });
+    if (!adminUser) throw new NotFoundException('Admin user not found');
+
+    // Check if there's already a pending hierarchy request from this user
+    const existing = await this.accessRequestRepo.findOne({
+      where: {
+        requester: { id: userId },
+        request_type: 'hierarchy',
+        status: 'pending',
+      },
+    });
+
+    if (existing) {
+      throw new ForbiddenException('Anda sudah memiliki request hierarki yang masih pending');
+    }
+
+    const request = this.accessRequestRepo.create({
+      requester,
+      owner: adminUser,
+      status: 'pending',
+      request_type: 'hierarchy',
+      requested_depth: requestedDepth,
+      message: message || `Request tambah kedalaman folder ke ${requestedDepth} level`,
+    });
+
+    return this.accessRequestRepo.save(request);
+  }
+
+  // =============================
+  // ADMIN APPROVE HIERARCHY REQUEST
+  // =============================
+  async approveHierarchyRequest(
+    requestId: number,
+    adminId: string,
+    responseMessage?: string,
+  ) {
+    const request = await this.accessRequestRepo.findOne({
+      where: { id: requestId },
+      relations: ['requester'],
+    });
+
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.request_type !== 'hierarchy') {
+      throw new ForbiddenException('This is not a hierarchy request');
+    }
+
+    request.status = 'approved';
+    request.response_message = responseMessage || null;
+    await this.accessRequestRepo.save(request);
+
+    // Update the specific user's max_folder_depth
+    if (request.requested_depth) {
+      request.requester.max_folder_depth = request.requested_depth;
+      await this.userRepo.save(request.requester);
+    }
+
+    return { message: 'Hierarchy request approved' };
+  }
+
+  // =============================
+  // GET PENDING HIERARCHY REQUESTS (for admin)
+  // =============================
+  async getPendingHierarchyRequests() {
+    return this.accessRequestRepo.find({
+      where: {
+        request_type: 'hierarchy',
+        status: 'pending',
+      },
+      order: { createdAt: 'DESC' },
+    });
+  }
 }

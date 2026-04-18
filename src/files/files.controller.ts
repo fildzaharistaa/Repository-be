@@ -69,7 +69,7 @@ export class FilesController {
     @Request() req: RequestWithUser,
     @Res() res: Response,
   ) {
-    const file = await this.filesService.findOne(id, req.user);
+    const file = await this.filesService.checkDownloadPermission(id, req.user);
 
     if (!fs.existsSync(file.path)) {
       return res.status(404).json({ message: 'File not found on disk' });

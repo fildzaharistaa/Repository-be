@@ -66,7 +66,8 @@ export class FoldersController {
     @Request() req: RequestWithUser,
   ) {
     // Admin can create root folders without permission check
-    const isAdmin = req.user.role?.name === 'admin';
+    const roleName = req.user.role?.name?.toLowerCase();
+    const isAdmin = roleName === 'admin' || roleName === 'super admin' || roleName === 'superadmin';
     
     // Check permission if parent_id is provided (skip for admin)
     if (createFolderDto.parent_id && !isAdmin) {

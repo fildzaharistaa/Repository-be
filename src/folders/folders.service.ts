@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm';
-import { Folder, FolderPermission, User, Role, File } from '../entities';
+import { Folder, FolderPermission, User, Role, File, SystemSetting } from '../entities';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
 
@@ -29,7 +29,43 @@ export class FoldersService {
     private roleRepository: Repository<Role>,
     @InjectRepository(File)
     private fileRepository: Repository<File>,
+    @InjectRepository(SystemSetting)
+    private settingRepository: Repository<SystemSetting>,
   ) {}
+
+  /**
+   * Calculate the depth of a folder by traversing the parent chain.
+   * A root folder has depth 1.
+   */
+  private async calculateDepth(parentId: string | null | undefined): Promise<number> {
+    if (!parentId) return 0; // root level, so new folder will be depth 1
+    let depth = 0;
+    let currentId: string | null = parentId;
+    while (currentId) {
+      depth++;
+      const folder = await this.folderRepository.findOne({ where: { id: currentId } });
+      currentId = folder?.parent_id ?? null;
+    }
+    return depth;
+  }
+
+  async getMaxFolderDepth(userId: string): Promise<number> {
+    const user = await this.folderRepository.manager.getRepository(User).findOne({
+      where: { id: userId },
+      relations: ['role'],
+    });
+
+    if (user?.max_folder_depth != null) {
+      return user.max_folder_depth;
+    }
+
+    if (user?.role?.max_folder_depth != null) {
+      return user.role.max_folder_depth;
+    }
+
+    const setting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
+    return setting ? parseInt(setting.value, 10) : 5;
+  }
 
   private mapRoleLabelToName(label: string): string {
     const norm = label.toLowerCase().trim();
@@ -50,6 +86,16 @@ export class FoldersService {
       if (!parent) {
         throw new NotFoundException('Parent folder not found');
       }
+    }
+
+    // Validate folder depth against max_folder_depth setting
+    const maxDepth = await this.getMaxFolderDepth(userId);
+    const parentDepth = await this.calculateDepth(createFolderDto.parent_id);
+    const newDepth = parentDepth + 1;
+    if (newDepth > maxDepth) {
+      throw new ForbiddenException(
+        `Melebihi batas kedalaman folder maksimal (${maxDepth} level). Silakan request ke Super Admin untuk menambah kedalaman.`,
+      );
     }
 
     // Get user with role for unit assignment
@@ -119,10 +165,10 @@ export class FoldersService {
               folder_id: savedFolder.id,
               role_id: role.id,
               can_read: true,
-              can_create: true,
-              can_update: true,
-              can_delete: true,
               can_download: true,
+              can_create: false,
+              can_update: false,
+              can_delete: false,
             });
           }
         }
@@ -141,6 +187,7 @@ export class FoldersService {
           existing.can_create = !!perm.can_create;
           existing.can_update = !!perm.can_update;
           existing.can_delete = !!perm.can_delete;
+          existing.can_download = !!perm.can_download;
           await this.permissionRepository.save(existing);
         } else {
           await this.permissionRepository.save({
@@ -150,7 +197,7 @@ export class FoldersService {
             can_create: !!perm.can_create,
             can_update: !!perm.can_update,
             can_delete: !!perm.can_delete,
-            can_download: !!perm.can_read,
+            can_download: !!perm.can_download,
           });
         }
       }
@@ -362,10 +409,10 @@ export class FoldersService {
               folder_id: folder.id,
               role_id: role.id,
               can_read: true,
-              can_create: true,
-              can_update: true,
-              can_delete: true,
               can_download: true,
+              can_create: false,
+              can_update: false,
+              can_delete: false,
             });
           }
         }
@@ -384,6 +431,7 @@ export class FoldersService {
           existing.can_create = !!perm.can_create;
           existing.can_update = !!perm.can_update;
           existing.can_delete = !!perm.can_delete;
+          existing.can_download = !!perm.can_download;
           await this.permissionRepository.save(existing);
         } else {
           await this.permissionRepository.save({
@@ -393,7 +441,7 @@ export class FoldersService {
             can_create: !!perm.can_create,
             can_update: !!perm.can_update,
             can_delete: !!perm.can_delete,
-            can_download: !!perm.can_read,
+            can_download: !!perm.can_download,
           });
         }
       }
@@ -446,7 +494,7 @@ export class FoldersService {
     userId: string,
     roleId: string,
     folderId: string,
-    permissionType: 'read' | 'create' | 'update' | 'delete',
+    permissionType: 'read' | 'create' | 'update' | 'delete' | 'download',
   ): Promise<boolean> {
     const now = new Date();
 
@@ -473,6 +521,8 @@ export class FoldersService {
         return permission.can_update;
       case 'delete':
         return permission.can_delete;
+      case 'download':
+        return permission.can_download;
       default:
         return false;
     }

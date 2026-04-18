@@ -4,7 +4,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull } from 'typeorm';
-import { Role, User, Folder, File } from '../entities';
+import { Role, User, Folder, File, SystemSetting } from '../entities';
 
 @Controller('stats')
 @UseGuards(JwtAuthGuard)
@@ -18,6 +18,8 @@ export class StatsController {
     private folderRepository: Repository<Folder>,
     @InjectRepository(File)
     private fileRepository: Repository<File>,
+    @InjectRepository(SystemSetting)
+    private settingRepository: Repository<SystemSetting>,
   ) {}
 
   @Get('super-admin')
@@ -117,11 +119,19 @@ export class StatsController {
     
     const totalSize = parseInt(storageResult?.totalSize || '0');
 
+    // Get system settings
+    const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
+    const maxStorageSetting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
+    const maxFolderDepth = maxDepthSetting ? parseInt(maxDepthSetting.value, 10) : 5;
+    const maxStoragePerUser = maxStorageSetting ? parseInt(maxStorageSetting.value, 10) : 104857600;
+
     return {
       totalRoles,
       totalFolders,
       totalFiles,
       totalSize,
+      maxFolderDepth,
+      maxStoragePerUser,
       foldersPerUnit,
       usersPerRole,
       recentActivity,
@@ -161,6 +171,24 @@ export class StatsController {
 
     const totalSize = parseInt(storageResult?.totalSize || '0');
 
+    // Get max storage per user setting
+    const maxStorageSetting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
+    const maxStoragePerUser = maxStorageSetting ? parseInt(maxStorageSetting.value, 10) : 104857600;
+
+    // Get user and their role to resolve max folder depth
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      relations: ['role']
+    });
+
+    // Get max folder depth setting
+    const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
+    const globalMaxFolderDepth = maxDepthSetting ? parseInt(maxDepthSetting.value, 10) : 5;
+    
+    const maxFolderDepth = user?.max_folder_depth != null 
+      ? user.max_folder_depth 
+      : (user?.role?.max_folder_depth != null ? user.role.max_folder_depth : globalMaxFolderDepth);
+
     //  milik user ini (15 terbaru)
     const recentFiles = await this.fileRepository
       .createQueryBuilder('file')
@@ -176,6 +204,8 @@ export class StatsController {
       totalFolders,
       totalFiles,
       totalSize,
+      maxStoragePerUser,
+      maxFolderDepth,
       recentFiles: recentFiles.map((f) => ({
         id: f.id,
         name: f.name,

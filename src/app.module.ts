@@ -18,6 +18,7 @@ import jwtConfig from './config/jwt.config';
 import { SearchModule } from './search/search.module';
 import { StatsModule } from './stats/stats.module';
 import { RecycleBinModule } from './recycle-bin/recycle-bin.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { RecycleBinModule } from './recycle-bin/recycle-bin.module';
     SearchModule,
     StatsModule,
     RecycleBinModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [
