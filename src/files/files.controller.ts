@@ -11,6 +11,9 @@ import {
   UseInterceptors,
   UploadedFile,
   Res,
+  Header,
+  Headers,
+  HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
@@ -61,6 +64,55 @@ export class FilesController {
   @Get(':id')
   async findOne(@Param('id') id: string, @Request() req: RequestWithUser) {
     return this.filesService.findOne(id, req.user);
+  }
+
+  @Get(':id/preview')
+  async preview(
+    @Param('id') id: string,
+    @Request() req: RequestWithUser,
+    @Res() res: Response,
+    @Headers('range') range?: string,
+  ) {
+    const file = await this.filesService.checkPreviewPermission(id, req.user);
+
+    if (!fs.existsSync(file.path)) {
+      return res.status(404).json({ message: 'File not found on disk' });
+    }
+
+    const stat = fs.statSync(file.path);
+    const fileSize = stat.size;
+
+    // Handle Range requests for video/audio streaming
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      const stream = fs.createReadStream(file.path, { start, end });
+
+      res.writeHead(HttpStatus.PARTIAL_CONTENT, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': file.mime_type,
+        'Content-Disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
+      });
+
+      stream.pipe(res);
+      return;
+    }
+
+    // Normal inline response (no range)
+    res.writeHead(HttpStatus.OK, {
+      'Content-Length': fileSize,
+      'Content-Type': file.mime_type,
+      'Content-Disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
+      'Accept-Ranges': 'bytes',
+    });
+
+    const stream = fs.createReadStream(file.path);
+    stream.pipe(res);
   }
 
   @Get(':id/download')

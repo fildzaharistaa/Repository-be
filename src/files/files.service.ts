@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { File, Folder, User, SystemSetting } from '../entities';
+import { File, Folder, User, SystemSetting, AccessRequest } from '../entities';
 import { FoldersService } from '../folders/folders.service';
 
 @Injectable()
@@ -136,6 +136,48 @@ export class FilesService {
     if (!hasPermission) {
       throw new ForbiddenException(
         'You do not have read permission for this file',
+      );
+    }
+
+    return file;
+  }
+
+  async checkPreviewPermission(id: string, user: User): Promise<File> {
+    const file = await this.fileRepository.findOne({
+      where: { id },
+      relations: ['folder'],
+    });
+
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    // Check read permission on parent folder (view-only is enough for preview)
+    let hasPermission = await this.foldersService.checkPermission(
+      user.id,
+      user.role_id,
+      file.folder_id,
+      'read',
+    );
+
+    if (!hasPermission) {
+      // Check file-level permission via AccessRequest (can_read is enough)
+      const filePerm = await this.fileRepository.manager.findOne(AccessRequest, {
+        where: {
+          requester: { id: user.id },
+          file: { id: file.id },
+          status: 'approved',
+          can_read: true,
+        },
+      });
+      if (filePerm) {
+        hasPermission = true;
+      }
+    }
+
+    if (!hasPermission) {
+      throw new ForbiddenException(
+        'You do not have permission to preview this file',
       );
     }
 
