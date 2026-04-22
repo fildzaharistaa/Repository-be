@@ -197,8 +197,18 @@ export class AccessRequestsService {
       throw new ForbiddenException('Not your resource');
     }
 
+    const targetUser = await this.userRepo.findOne({ where: { id: request.requester.id }, relations: ['role'] });
+    const roleName = targetUser?.role?.name?.toLowerCase() || '';
+    const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
+
     request.status = 'approved';
     request.response_message = responseMessage || null;
+    request.can_read = permissions?.can_read ?? true;
+    request.can_download = permissions?.can_download ?? false;
+    request.can_create = isDosenOrTendik ? true : (permissions?.can_create ?? false);
+    request.can_update = isDosenOrTendik ? true : (permissions?.can_update ?? false);
+    request.can_delete = isDosenOrTendik ? true : (permissions?.can_delete ?? false);
+
     await this.accessRequestRepo.save(request);
 
     if (request.folder) {
@@ -206,11 +216,11 @@ export class AccessRequestsService {
       await this.folderPermissionRepo.save({
         user: request.requester,
         folder: request.folder,
-        can_read: permissions?.can_read ?? true,
-        can_download: permissions?.can_download ?? false,
-        can_create: permissions?.can_create ?? false,
-        can_update: permissions?.can_update ?? false,
-        can_delete: permissions?.can_delete ?? false,
+        can_read: request.can_read,
+        can_download: request.can_download,
+        can_create: request.can_create,
+        can_update: request.can_update,
+        can_delete: request.can_delete,
       });
 
     } else if (request.file) {
@@ -380,9 +390,9 @@ export class AccessRequestsService {
         owner_name: r.owner?.name || 'Unknown',
         can_read: r.can_read,
         can_download: r.can_download,
-        can_create: false,
-        can_update: false,
-        can_delete: false,
+        can_create: r.can_create,
+        can_update: r.can_update,
+        can_delete: r.can_delete,
       }));
   }
 
@@ -441,15 +451,18 @@ export class AccessRequestsService {
 
     // 3. Grant access to all identified users
     for (const userId of targetUserIds) {
-      const targetUser = await this.userRepo.findOne({ where: { id: userId } });
+      const targetUser = await this.userRepo.findOne({ where: { id: userId }, relations: ['role'] });
       if (!targetUser) continue;
+
+      const roleName = targetUser.role?.name?.toLowerCase() || '';
+      const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
 
       let request = await this.accessRequestRepo.findOne({
         where: { requester: { id: userId }, file: { id: fileId } }
       });
 
       const userPerms = userPermsMap.get(userId) || {
-        can_read: true, can_download: false, can_create: false, can_update: false, can_delete: false
+        can_read: true, can_download: false, can_create: isDosenOrTendik, can_update: isDosenOrTendik, can_delete: isDosenOrTendik
       };
 
       if (!request) {
@@ -461,18 +474,18 @@ export class AccessRequestsService {
           response_message: data.message || null,
           can_read: userPerms.can_read ?? true,
           can_download: userPerms.can_download ?? false,
-          can_create: false,
-          can_update: false,
-          can_delete: false,
+          can_create: isDosenOrTendik,
+          can_update: isDosenOrTendik,
+          can_delete: isDosenOrTendik,
         });
       } else {
         request.status = 'approved';
         if (data.message) request.response_message = data.message;
         request.can_read = userPerms.can_read ?? true;
         request.can_download = userPerms.can_download ?? false;
-        request.can_create = false;
-        request.can_update = false;
-        request.can_delete = false;
+        request.can_create = isDosenOrTendik;
+        request.can_update = isDosenOrTendik;
+        request.can_delete = isDosenOrTendik;
       }
 
       await this.accessRequestRepo.save(request);

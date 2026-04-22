@@ -155,6 +155,7 @@ export class FoldersService {
         });
 
         if (role) {
+          const isDosenOrTendik = mappedName === 'dosen' || mappedName === 'tendik';
           // Check if permission already exists for this role+folder
           const existing = await this.permissionRepository.findOne({
             where: { folder_id: savedFolder.id, role_id: role.id },
@@ -166,9 +167,9 @@ export class FoldersService {
               role_id: role.id,
               can_read: true,
               can_download: true,
-              can_create: false,
-              can_update: false,
-              can_delete: false,
+              can_create: isDosenOrTendik,
+              can_update: isDosenOrTendik,
+              can_delete: isDosenOrTendik,
             });
           }
         }
@@ -399,6 +400,7 @@ export class FoldersService {
         });
 
         if (role) {
+          const isDosenOrTendik = mappedName === 'dosen' || mappedName === 'tendik';
           // Check if permission already exists for this role+folder
           const existing = await this.permissionRepository.findOne({
             where: { folder_id: folder.id, role_id: role.id },
@@ -410,9 +412,9 @@ export class FoldersService {
               role_id: role.id,
               can_read: true,
               can_download: true,
-              can_create: false,
-              can_update: false,
-              can_delete: false,
+              can_create: isDosenOrTendik,
+              can_update: isDosenOrTendik,
+              can_delete: isDosenOrTendik,
             });
           }
         }

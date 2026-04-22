@@ -14,7 +14,7 @@ export default registerAs(
     database: process.env.DB_NAME || 'campus_repository',
     entities: [User, Role, Folder, File, FolderPermission, AccessRequest, SystemSetting],
     synchronize: process.env.NODE_ENV !== 'production',
-    logging: process.env.NODE_ENV === 'development',
+    logging: false,
   }),
 );
 
