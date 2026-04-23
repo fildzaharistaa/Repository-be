@@ -50,5 +50,8 @@ export class File {
 
   @DeleteDateColumn()
   deleted_at: Date | null;
+
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  last_accessed_at: Date;
 }
 

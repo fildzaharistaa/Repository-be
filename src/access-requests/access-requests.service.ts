@@ -201,6 +201,18 @@ export class AccessRequestsService {
     const roleName = targetUser?.role?.name?.toLowerCase() || '';
     const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
 
+    if (request.request_type === 'delete_confirmation') {
+      request.status = 'approved';
+      request.response_message = responseMessage || 'Persetujuan penghapusan file dikonfirmasi';
+      await this.accessRequestRepo.save(request);
+
+      if (request.file) {
+        await this.fileRepo.softRemove(request.file);
+      }
+
+      return { message: 'File berhasil dipindahkan ke Recycle Bin' };
+    }
+
     request.status = 'approved';
     request.response_message = responseMessage || null;
     request.can_read = permissions?.can_read ?? true;

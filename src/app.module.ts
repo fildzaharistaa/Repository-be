@@ -5,6 +5,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { ScheduleModule } from '@nestjs/schedule';
 import { UsersModule } from './users/users.module';
 import { RolesModule } from './roles/roles.module';
 import { FoldersModule } from './folders/folders.module';
@@ -19,6 +20,7 @@ import { SearchModule } from './search/search.module';
 import { StatsModule } from './stats/stats.module';
 import { RecycleBinModule } from './recycle-bin/recycle-bin.module';
 import { SettingsModule } from './settings/settings.module';
+import { CronModule } from './cron/cron.module';
 
 @Module({
   imports: [
@@ -44,6 +46,8 @@ import { SettingsModule } from './settings/settings.module';
     StatsModule,
     RecycleBinModule,
     SettingsModule,
+    CronModule,
+    ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [

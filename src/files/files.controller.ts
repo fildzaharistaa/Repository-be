@@ -14,6 +14,8 @@ import {
   Header,
   Headers,
   HttpStatus,
+  ParseFilePipe,
+  MaxFileSizeValidator
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
@@ -47,7 +49,13 @@ export class FilesController {
   )
   async uploadFile(
     @Param('folderId') folderId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024, message: 'File melebihi batas 5MB' }),
+        ],
+      }),
+    ) file: Express.Multer.File,
     @Request() req: RequestWithUser,
   ) {
     return this.filesService.create(file, folderId, req.user);

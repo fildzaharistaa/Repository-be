@@ -27,8 +27,8 @@ export class AccessRequest {
   })
   status: 'pending' | 'approved' | 'rejected';
 
-  @Column({ type: 'varchar', length: 20, default: 'access' })
-  request_type: 'access' | 'hierarchy';
+  @Column({ type: 'varchar', length: 30, default: 'access' })
+  request_type: 'access' | 'hierarchy' | 'delete_confirmation' | 'system_notification';
 
   @Column({ type: 'int', nullable: true })
   requested_depth: number | null;

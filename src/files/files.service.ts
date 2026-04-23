@@ -206,6 +206,9 @@ export class FilesService {
 
     await this.verifyOwnershipIfRestricted(file, user);
 
+    file.last_accessed_at = new Date();
+    await this.fileRepository.save(file);
+
     return file;
   }
 
@@ -248,6 +251,9 @@ export class FilesService {
     }
 
     await this.verifyOwnershipIfRestricted(file, user);
+
+    file.last_accessed_at = new Date();
+    await this.fileRepository.save(file);
 
     return file;
   }
