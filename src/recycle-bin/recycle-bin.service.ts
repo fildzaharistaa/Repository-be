@@ -28,10 +28,12 @@ export class RecycleBinService {
    * For files: only show files whose parent folder is NOT deleted.
    */
   async findAllTrashed(userId: string, isAdmin: boolean) {
+    const findConditions = isAdmin ? {} : { owner_id: userId };
+
     // Get all soft-deleted files
     const allDeletedFiles = await this.fileRepository.find({
       withDeleted: true,
-      where: { deleted_at: Not(IsNull()) },
+      where: { ...findConditions, deleted_at: Not(IsNull()) },
       relations: ['folder'],
       order: { deleted_at: 'DESC' },
     });
@@ -39,7 +41,7 @@ export class RecycleBinService {
     // Get all soft-deleted folders
     const allDeletedFolders = await this.folderRepository.find({
       withDeleted: true,
-      where: { deleted_at: Not(IsNull()) },
+      where: { ...findConditions, deleted_at: Not(IsNull()) },
       order: { deleted_at: 'DESC' },
     });
 

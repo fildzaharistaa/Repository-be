@@ -391,7 +391,7 @@ export class AccessRequestsService {
         requester: { id: userId },
         status: 'approved',
       },
-      relations: ['file', 'file.folder', 'owner'],
+      relations: ['file', 'file.folder', 'owner', 'owner.role'],
     });
 
     // Filter only those that have a file and map them
@@ -400,6 +400,7 @@ export class AccessRequestsService {
       .map((r) => ({
         ...r.file,
         owner_name: r.owner?.name || 'Unknown',
+        owner_role: r.owner?.role?.name || 'Unknown',
         can_read: r.can_read,
         can_download: r.can_download,
         can_create: r.can_create,

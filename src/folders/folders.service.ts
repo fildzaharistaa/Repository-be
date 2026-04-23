@@ -351,18 +351,7 @@ export class FoldersService {
     const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
     const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
 
-    let folders: Folder[] = [];
-    if (isWD) {
-      folders = foldersRaw.filter(f => {
-        if (f.owner_id === user.id) return false; // shared tree doesn't show owned folders
-
-        const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
-        const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
-        return !isOwnerWD;
-      });
-    } else {
-      folders = foldersRaw.filter(f => f.owner_id !== user.id);
-    }
+    const folders = foldersRaw.filter(f => f.owner_id !== user.id);
 
     return this.buildTreeWithOwner(folders);
   }
@@ -410,6 +399,7 @@ export class FoldersService {
         created_at: folder.created_at,
         updated_at: folder.updated_at,
         owner_name: folder.owner?.name || 'Unknown',
+        owner_role: folder.owner?.role?.name || 'Unknown',
         children: [],
       });
     });
