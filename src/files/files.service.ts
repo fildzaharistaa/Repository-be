@@ -18,7 +18,16 @@ export class FilesService {
     @InjectRepository(SystemSetting)
     private settingRepository: Repository<SystemSetting>,
     private foldersService: FoldersService,
-  ) {}
+  ) { }
+
+  private async verifyOwnershipIfRestricted(file: File, user: User): Promise<void> {
+    const fullUser = await this.fileRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
+    const roleName = fullUser?.role?.name?.toLowerCase() || '';
+    const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
+    if (isDosenOrTendik && file.owner_id !== user.id) {
+      throw new ForbiddenException('Strict Isolation: Anda tidak dapat mengakses file milik pengguna lain di folder ini');
+    }
+  }
 
   private async getMaxStoragePerUser(): Promise<number> {
     const setting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
@@ -81,6 +90,8 @@ export class FilesService {
       mime_type: file.mimetype,
       size: file.size,
       folder_id: folderId,
+      owner_id: user.id,
+      owner: user,
     });
 
     return this.fileRepository.save(fileEntity);
@@ -109,8 +120,18 @@ export class FilesService {
       );
     }
 
+    const fullUser = await this.fileRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
+    const roleName = fullUser?.role?.name?.toLowerCase() || '';
+    const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
+
+    const whereCondition: any = { folder_id: folderId };
+    if (isDosenOrTendik) {
+      whereCondition.owner_id = user.id;
+    }
+
     return this.fileRepository.find({
-      where: { folder_id: folderId },
+      where: whereCondition,
+      relations: ['owner', 'owner.role'],
       order: { created_at: 'DESC' },
     });
   }
@@ -138,6 +159,8 @@ export class FilesService {
         'You do not have read permission for this file',
       );
     }
+
+    await this.verifyOwnershipIfRestricted(file, user);
 
     return file;
   }
@@ -181,6 +204,8 @@ export class FilesService {
       );
     }
 
+    await this.verifyOwnershipIfRestricted(file, user);
+
     return file;
   }
 
@@ -222,6 +247,8 @@ export class FilesService {
       );
     }
 
+    await this.verifyOwnershipIfRestricted(file, user);
+
     return file;
   }
 
@@ -248,6 +275,8 @@ export class FilesService {
         'You do not have update permission for this file',
       );
     }
+
+    await this.verifyOwnershipIfRestricted(file, user);
 
     file.name = name;
     return this.fileRepository.save(file);

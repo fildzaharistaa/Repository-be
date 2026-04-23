@@ -22,7 +22,7 @@ export class UsersService {
     private roleRepository: Repository<Role>,
     @Inject(forwardRef(() => FoldersService))
     private foldersService: FoldersService,
-  ) {}
+  ) { }
 
   async findOne(id: string): Promise<User> {
     const user = await this.userRepository.findOne({
@@ -96,7 +96,7 @@ export class UsersService {
 
     // Assuming we have basic string roles to matching role_ids
     const roles = await this.roleRepository.find();
-    
+
     // Process sequentially to handle conflicts and hashes properly
     for (const data of usersData) {
       if (!data.name || !data.email) {
@@ -104,7 +104,7 @@ export class UsersService {
         errors.push({ email: data.email || 'Unknown', error: 'Missing name or email' });
         continue;
       }
-      
+
       try {
         const existingUser = await this.findByEmail(data.email);
         if (existingUser) {
@@ -114,14 +114,14 @@ export class UsersService {
         }
 
         const role = roles.find(r => r.name === (data.role || '').toLowerCase()) || roles.find(r => r.name === 'tendik');
-        
+
         await this.create({
           email: data.email,
           name: data.name,
           password: data.password || 'password123', // Default password
           role_id: role ? role.id : undefined,
         });
-        
+
         success++;
       } catch (err) {
         failed++;
@@ -158,7 +158,7 @@ export class UsersService {
     // Apply remaining fields (name, password, etc.)
     const { role_id, ...otherFields } = updateUserDto;
     Object.assign(user, otherFields);
-5
+    5
     await this.userRepository.save(user);
 
     // Re-fetch to return consistent data with role relation

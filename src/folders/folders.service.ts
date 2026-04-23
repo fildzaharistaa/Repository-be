@@ -31,7 +31,7 @@ export class FoldersService {
     private fileRepository: Repository<File>,
     @InjectRepository(SystemSetting)
     private settingRepository: Repository<SystemSetting>,
-  ) {}
+  ) { }
 
   /**
    * Calculate the depth of a folder by traversing the parent chain.
@@ -103,6 +103,11 @@ export class FoldersService {
       where: { id: userId },
       relations: ['role'],
     });
+
+    const roleName = user?.role?.name?.toLowerCase() || '';
+    if (roleName.includes('dosen') || roleName.includes('tendik')) {
+      throw new ForbiddenException('Role Anda tidak diizinkan untuk membuat folder.');
+    }
 
     const folder = this.folderRepository.create({
       ...createFolderDto,
@@ -210,7 +215,7 @@ export class FoldersService {
   async findOne(id: string): Promise<Folder> {
     const folder = await this.folderRepository.findOne({
       where: { id },
-      relations: ['parent', 'children'],
+      relations: ['parent', 'children', 'permissions', 'permissions.role', 'permissions.user'],
     });
 
     if (!folder) {
@@ -222,16 +227,30 @@ export class FoldersService {
 
   async findAllAccessible(user: User): Promise<Folder[]> {
     const accessibleFolderIds = await this.getAccessibleFolderIds(user);
-    
+
     if (accessibleFolderIds.length === 0) {
       return [];
     }
 
-    return this.folderRepository.find({
+    const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
+    const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
+
+    const folders = await this.folderRepository.find({
       where: { id: In(accessibleFolderIds) },
-      relations: ['parent'],
+      relations: ['parent', 'owner', 'owner.role'],
       order: { name: 'ASC' },
     });
+
+    if (isWD) {
+      return folders.filter(f => {
+        if (f.owner_id === user.id) return true;
+        const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
+        const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
+        return !isOwnerWD;
+      });
+    }
+
+    return folders;
   }
 
   async findAllForAdmin(): Promise<Folder[]> {
@@ -288,14 +307,26 @@ export class FoldersService {
       return [];
     }
 
-    // Get ONLY OWNED folders so it doesn't mix with Shared Folders
-    const folders = await this.folderRepository
-      .createQueryBuilder('folder')
-      .where('folder.id IN (:...ids)', { ids: accessibleFolderIds })
-      .andWhere('folder.owner_id = :userId', { userId: user.id })
-      .andWhere('folder.deleted_at IS NULL')
-      .orderBy('folder.name', 'ASC')
-      .getMany();
+    const foldersRaw = await this.folderRepository.find({
+      where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
+      relations: ['owner', 'owner.role'],
+      order: { name: 'ASC' },
+    });
+
+    const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
+    const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
+
+    let folders: Folder[] = [];
+    if (isWD) {
+      folders = foldersRaw.filter(f => {
+        if (f.owner_id === user.id) return true;
+        const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
+        const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
+        return !isOwnerWD;
+      });
+    } else {
+      folders = foldersRaw.filter(f => f.owner_id === user.id);
+    }
 
     return this.buildTree(folders);
   }
@@ -308,14 +339,30 @@ export class FoldersService {
     }
 
     // Get only SHARED folders (user has permission but is NOT the owner)
-    const folders = await this.folderRepository
-      .createQueryBuilder('folder')
-      .where('folder.id IN (:...ids)', { ids: accessibleFolderIds })
-      .andWhere('(folder.owner_id != :userId OR folder.owner_id IS NULL)', { userId: user.id })
-      .andWhere('folder.deleted_at IS NULL')
-      .leftJoinAndSelect('folder.owner', 'owner')
-      .orderBy('folder.name', 'ASC')
-      .getMany();
+    const foldersRaw = await this.folderRepository.find({
+      where: {
+        id: In(accessibleFolderIds),
+        deleted_at: IsNull()
+      },
+      relations: ['owner', 'owner.role'],
+      order: { name: 'ASC' },
+    });
+
+    const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
+    const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
+
+    let folders: Folder[] = [];
+    if (isWD) {
+      folders = foldersRaw.filter(f => {
+        if (f.owner_id === user.id) return false; // shared tree doesn't show owned folders
+
+        const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
+        const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
+        return !isOwnerWD;
+      });
+    } else {
+      folders = foldersRaw.filter(f => f.owner_id !== user.id);
+    }
 
     return this.buildTreeWithOwner(folders);
   }
@@ -385,71 +432,86 @@ export class FoldersService {
 
   async update(id: string, updateFolderDto: UpdateFolderDto): Promise<Folder> {
     const folder = await this.findOne(id);
-    
-    // Update name if provided
+
     if (updateFolderDto.name) {
       folder.name = updateFolderDto.name;
     }
 
-    // Handle new share_with_roles assignments
-    if (updateFolderDto.share_with_roles && updateFolderDto.share_with_roles.length > 0) {
-      for (const roleName of updateFolderDto.share_with_roles) {
-        const mappedName = this.mapRoleLabelToName(roleName);
-        const role = await this.roleRepository.findOne({
-          where: { name: mappedName as any },
-        });
+    // --- SINKRONISASI GRUP ROLE SHARING ---
+    if (updateFolderDto.share_with_roles) {
+      const targetRoleIds: string[] = [];
+      for (const roleLabel of updateFolderDto.share_with_roles) {
+        const mappedName = this.mapRoleLabelToName(roleLabel);
+        const role = await this.roleRepository.findOne({ where: { name: mappedName as any } });
+        if (role) targetRoleIds.push(role.id);
+      }
 
-        if (role) {
-          const isDosenOrTendik = mappedName === 'dosen' || mappedName === 'tendik';
-          // Check if permission already exists for this role+folder
-          const existing = await this.permissionRepository.findOne({
-            where: { folder_id: folder.id, role_id: role.id },
+      // Hapus izin role yang tidak ada di targetRoleIds untuk folder ini
+      const currentRolePerms = folder.permissions.filter(p => !!p.role_id);
+      for (const p of currentRolePerms) {
+        if (!targetRoleIds.includes(p.role_id!)) {
+          await this.permissionRepository.delete(p.id);
+        }
+      }
+
+      // Tambahkan yang belum ada
+      for (const roleId of targetRoleIds) {
+        if (!currentRolePerms.find(p => p.role_id === roleId)) {
+          const role = await this.roleRepository.findOne({ where: { id: roleId } });
+          const isDosenOrTendik = role?.name === 'dosen' || role?.name === 'tendik';
+          await this.permissionRepository.save({
+            folder_id: folder.id,
+            role_id: roleId,
+            can_read: true,
+            can_download: true,
+            can_create: isDosenOrTendik,
+            can_update: isDosenOrTendik,
+            can_delete: isDosenOrTendik,
           });
-
-          if (!existing) {
-            await this.permissionRepository.save({
-              folder_id: folder.id,
-              role_id: role.id,
-              can_read: true,
-              can_download: true,
-              can_create: isDosenOrTendik,
-              can_update: isDosenOrTendik,
-              can_delete: isDosenOrTendik,
-            });
-          }
         }
       }
     }
 
-    // Handle specific user permissions 
-    if (updateFolderDto.user_permissions && updateFolderDto.user_permissions.length > 0) {
-      for (const perm of updateFolderDto.user_permissions) {
-        const existing = await this.permissionRepository.findOne({
-          where: { folder_id: folder.id, user_id: perm.user_id },
-        });
+    // --- SINKRONISASI USER PERMISSIONS ---
+    if (updateFolderDto.user_permissions) {
+      const targetUserIds = updateFolderDto.user_permissions.map(up => up.user_id);
+      const currentUserPerms = folder.permissions.filter(p => !!p.user_id && p.user_id !== folder.owner_id);
 
+      // Hapus yang tidak ada di target
+      for (const p of currentUserPerms) {
+        if (!targetUserIds.includes(p.user_id!)) {
+          await this.permissionRepository.delete(p.id);
+        }
+      }
+
+      // Tambah / Update yang ada
+      for (const up of updateFolderDto.user_permissions) {
+        if (up.user_id === folder.owner_id) continue;
+        const existing = currentUserPerms.find(p => p.user_id === up.user_id);
         if (existing) {
-          existing.can_read = !!perm.can_read;
-          existing.can_create = !!perm.can_create;
-          existing.can_update = !!perm.can_update;
-          existing.can_delete = !!perm.can_delete;
-          existing.can_download = !!perm.can_download;
-          await this.permissionRepository.save(existing);
+          await this.permissionRepository.update(existing.id, {
+            can_read: !!up.can_read,
+            can_download: !!up.can_download,
+            can_create: !!up.can_create,
+            can_update: !!up.can_update,
+            can_delete: !!up.can_delete,
+          });
         } else {
           await this.permissionRepository.save({
             folder_id: folder.id,
-            user_id: perm.user_id,
-            can_read: !!perm.can_read,
-            can_create: !!perm.can_create,
-            can_update: !!perm.can_update,
-            can_delete: !!perm.can_delete,
-            can_download: !!perm.can_download,
+            user_id: up.user_id,
+            can_read: !!up.can_read,
+            can_download: !!up.can_download,
+            can_create: !!up.can_create,
+            can_update: !!up.can_update,
+            can_delete: !!up.can_delete,
           });
         }
       }
     }
 
-    return this.folderRepository.save(folder);
+    await this.folderRepository.save(folder);
+    return this.findOne(id); // Kembalikan data segar dengan relasi terbaru
   }
 
   async remove(id: string): Promise<void> {

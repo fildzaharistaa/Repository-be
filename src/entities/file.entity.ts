@@ -9,6 +9,7 @@ import {
   DeleteDateColumn,
 } from 'typeorm';
 import { Folder } from './folder.entity';
+import { User } from './user.entity';
 
 @Entity('files')
 export class File {
@@ -33,6 +34,13 @@ export class File {
   @ManyToOne(() => Folder, (folder) => folder.files)
   @JoinColumn({ name: 'folder_id' })
   folder: Folder;
+
+  @Column({ type: 'uuid', nullable: true })
+  owner_id: string | null;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'owner_id' })
+  owner: User | null;
 
   @CreateDateColumn()
   created_at: Date;
