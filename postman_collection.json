@@ -1,0 +1,932 @@
+{
+	"info": {
+		"_postman_id": "4b7b2b1a-8c8d-4e9f-9a1b-3c4d5e6f7a8b",
+		"name": "Campus Repository API",
+		"description": "Collection for Campus Repository Management System API endpoints.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Auth",
+			"item": [
+				{
+					"name": "Login",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"admin@example.com\",\n    \"password\": \"password123\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"auth",
+								"login"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"newuser@example.com\",\n    \"password\": \"password123\",\n    \"name\": \"New User\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/register",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"auth",
+								"register"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Users",
+			"item": [
+				{
+					"name": "Get Profile",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/profile",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"users",
+								"profile"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Role",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/role",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"users",
+								"role"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get All Users",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users?page=1&limit=10",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create User (Admin)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"test@example.com\",\n    \"password\": \"password123\",\n    \"name\": \"Test User\",\n    \"role_id\": \"uuid-here\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/users",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"users"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update User",
+					"request": {
+						"method": "PATCH",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Updated Name\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/users/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"users",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete User",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"users",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Folders",
+			"item": [
+				{
+					"name": "Get Folder Tree",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/folders/tree",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"folders",
+								"tree"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Shared Tree",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/folders/shared/tree",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"folders",
+								"shared",
+								"tree"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create Folder",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"New Folder\",\n    \"parent_id\": null,\n    \"share_with_roles\": [],\n    \"user_permissions\": []\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/folders",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"folders"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Folder By ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/folders/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"folders",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Folder",
+					"request": {
+						"method": "PATCH",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Updated Folder Name\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/folders/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"folders",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Folder",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/folders/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"folders",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Files",
+			"item": [
+				{
+					"name": "Upload File",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/files/upload/:folderId",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files",
+								"upload",
+								":folderId"
+							],
+							"variable": [
+								{
+									"key": "folderId",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Files in Folder",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/files/folder/:folderId",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files",
+								"folder",
+								":folderId"
+							],
+							"variable": [
+								{
+									"key": "folderId",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get File Info",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/files/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Preview File",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/files/:id/preview",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files",
+								":id",
+								"preview"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Download File",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/files/:id/download",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files",
+								":id",
+								"download"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Rename File",
+					"request": {
+						"method": "PATCH",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"New Filename.pdf\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/files/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete File",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/files/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Recycle Bin",
+			"item": [
+				{
+					"name": "Get Trashed Items",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/recycle-bin",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"recycle-bin"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restore File",
+					"request": {
+						"method": "PATCH",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/recycle-bin/restore/file/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"recycle-bin",
+								"restore",
+								"file",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restore Folder",
+					"request": {
+						"method": "PATCH",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/recycle-bin/restore/folder/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"recycle-bin",
+								"restore",
+								"folder",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Permanent Delete File",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/recycle-bin/file/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"recycle-bin",
+								"file",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Permanent Delete Folder",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/recycle-bin/folder/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"recycle-bin",
+								"folder",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "uuid"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Access Requests",
+			"item": [
+				{
+					"name": "Request Access",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"folderId\": \"uuid-here\",\n    \"fileId\": null,\n    \"message\": \"I need access to this folder\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/access-requests",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"access-requests"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "My Requests",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/access-requests/my-requests",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"access-requests",
+								"my-requests"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Shared Files",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/access-requests/shared-files",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"access-requests",
+								"shared-files"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Approve Request",
+					"request": {
+						"method": "PATCH",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"can_read\": true,\n    \"can_create\": false,\n    \"can_update\": false,\n    \"can_delete\": false,\n    \"response_message\": \"Approved\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/access-requests/:id/approve",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"access-requests",
+								":id",
+								"approve"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "1"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Stats",
+			"item": [
+				{
+					"name": "Super Admin Stats",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/stats/super-admin",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"stats",
+								"super-admin"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "User Stats",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/stats/user",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"stats",
+								"user"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Chatbot",
+			"item": [
+				{
+					"name": "Chat",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"message\": \"Halo, apa itu sistem repositori ini?\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/chatbot/chat",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"chatbot",
+								"chat"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Search Folders AI",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"query\": \"folder dokumen\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/chatbot/search",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"chatbot",
+								"search"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{auth_token}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3030",
+			"type": "string"
+		},
+		{
+			"key": "auth_token",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
