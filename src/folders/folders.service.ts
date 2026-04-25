@@ -399,6 +399,7 @@ export class FoldersService {
         created_at: folder.created_at,
         updated_at: folder.updated_at,
         owner_name: folder.owner?.name || 'Unknown',
+        owner_email: folder.owner?.email || '',
         owner_role: folder.owner?.role?.name || 'Unknown',
         children: [],
       });
