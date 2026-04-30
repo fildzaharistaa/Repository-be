@@ -128,6 +128,31 @@ export class FoldersService {
       can_download: true,
     });
 
+    // Automatically grant full permissions to the creator's role to integrate folders for users with the same role
+    if (user?.role?.id) {
+      const existingRolePerm = await this.permissionRepository.findOne({
+        where: { folder_id: savedFolder.id, role_id: user.role.id }
+      });
+      if (!existingRolePerm) {
+        await this.permissionRepository.save({
+          folder_id: savedFolder.id,
+          role_id: user.role.id,
+          can_read: true,
+          can_create: true,
+          can_update: true,
+          can_delete: true,
+          can_download: true,
+        });
+      } else {
+        existingRolePerm.can_read = true;
+        existingRolePerm.can_create = true;
+        existingRolePerm.can_update = true;
+        existingRolePerm.can_delete = true;
+        existingRolePerm.can_download = true;
+        await this.permissionRepository.save(existingRolePerm);
+      }
+    }
+
     // Inherit permissions from parent folder if exists
     if (createFolderDto.parent_id) {
       const parentPermissions = await this.permissionRepository.find({
@@ -244,6 +269,7 @@ export class FoldersService {
     if (isWD) {
       return folders.filter(f => {
         if (f.owner_id === user.id) return true;
+        if (f.owner?.role?.id === fullUser?.role?.id) return true;
         const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
         const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
         return !isOwnerWD;
@@ -320,12 +346,13 @@ export class FoldersService {
     if (isWD) {
       folders = foldersRaw.filter(f => {
         if (f.owner_id === user.id) return true;
+        if (f.owner?.role?.id === fullUser?.role?.id) return true;
         const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
         const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
         return !isOwnerWD;
       });
     } else {
-      folders = foldersRaw.filter(f => f.owner_id === user.id);
+      folders = foldersRaw.filter(f => f.owner_id === user.id || f.owner?.role?.id === fullUser?.role?.id);
     }
 
     return this.buildTree(folders);
@@ -351,7 +378,7 @@ export class FoldersService {
     const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
     const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
 
-    const folders = foldersRaw.filter(f => f.owner_id !== user.id);
+    const folders = foldersRaw.filter(f => f.owner_id !== user.id && f.owner?.role?.id !== fullUser?.role?.id);
 
     return this.buildTreeWithOwner(folders);
   }
