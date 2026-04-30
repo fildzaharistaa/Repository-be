@@ -528,7 +528,11 @@ export class FoldersService {
       }
     }
 
-    await this.folderRepository.save(folder);
+    // Only update the folder name if it was changed, avoiding full entity save which causes relation sync issues
+    if (updateFolderDto.name) {
+      await this.folderRepository.update(id, { name: updateFolderDto.name });
+    }
+
     return this.findOne(id); // Kembalikan data segar dengan relasi terbaru
   }
 

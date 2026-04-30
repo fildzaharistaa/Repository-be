@@ -3,8 +3,8 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
-import { Role, User, Folder, File, SystemSetting } from '../entities';
+import { Repository, IsNull, In } from 'typeorm';
+import { Role, User, Folder, File, SystemSetting, FolderPermission } from '../entities';
 
 @Controller('stats')
 @UseGuards(JwtAuthGuard)
@@ -20,6 +20,8 @@ export class StatsController {
     private fileRepository: Repository<File>,
     @InjectRepository(SystemSetting)
     private settingRepository: Repository<SystemSetting>,
+    @InjectRepository(FolderPermission)
+    private permissionRepository: Repository<FolderPermission>,
   ) {}
 
   @Get('super-admin')
@@ -145,41 +147,88 @@ export class StatsController {
   async getUserStats(@Request() req) {
     const userId = req.user.id;
 
-    // Total folders milik user ini
-    const totalFolders = await this.folderRepository.count({
-      where: { owner_id: userId, deleted_at: IsNull() },
-    });
-
-    // Total files di dalam folder milik user ini
-    const totalFiles = await this.fileRepository
-      .createQueryBuilder('file')
-      .innerJoin('file.folder', 'folder')
-      .where('folder.owner_id = :userId', { userId })
-      .andWhere('file.deleted_at IS NULL')
-      .andWhere('folder.deleted_at IS NULL')
-      .getCount();
-
-    // Total storage dari file milik user ini
-    const storageResult = await this.fileRepository
-      .createQueryBuilder('file')
-      .innerJoin('file.folder', 'folder')
-      .select('SUM(file.size)', 'totalSize')
-      .where('folder.owner_id = :userId', { userId })
-      .andWhere('file.deleted_at IS NULL')
-      .andWhere('folder.deleted_at IS NULL')
-      .getRawOne();
-
-    const totalSize = parseInt(storageResult?.totalSize || '0');
-
-    // Get max storage per user setting
-    const maxStorageSetting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
-    const maxStoragePerUser = maxStorageSetting ? parseInt(maxStorageSetting.value, 10) : 104857600;
-
-    // Get user and their role to resolve max folder depth
+    // Get user and their role
     const user = await this.userRepository.findOne({
       where: { id: userId },
       relations: ['role']
     });
+
+    // Ensure roleId is always a string UUID, never a Role object
+    const roleId = user?.role_id || user?.role?.id || req.user.role_id || null;
+
+    console.log('[getUserStats] userId:', userId, 'roleId:', roleId, 'roleName:', user?.role?.name);
+
+    const now = new Date();
+
+    // Get accessible folder IDs (owner or shared via user_id or role_id)
+    const qb = this.permissionRepository
+      .createQueryBuilder('fp')
+      .select('fp.folder_id', 'folder_id')
+      .where('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now });
+
+    if (roleId) {
+      qb.andWhere(
+        '(fp.user_id = :userId OR fp.role_id = :roleId)',
+        { userId, roleId },
+      );
+    } else {
+      qb.andWhere('fp.user_id = :userId', { userId });
+    }
+
+    const permissions = await qb.getRawMany();
+
+    console.log('[getUserStats] permissions found:', permissions.length, 'folderIds:', permissions.map(p => p.folder_id));
+
+    const accessibleFolderIds = Array.from(new Set(permissions.map((p) => p.folder_id)));
+
+    let totalFolders = 0;
+    let totalFiles = 0;
+    let totalSize = 0;
+    let recentFiles: any[] = [];
+
+    if (accessibleFolderIds.length > 0) {
+      // Total accessible folders (not deleted)
+      totalFolders = await this.folderRepository.count({
+        where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
+      });
+
+      // Total files di dalam accessible folders
+      totalFiles = await this.fileRepository
+        .createQueryBuilder('file')
+        .innerJoin('file.folder', 'folder')
+        .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
+        .andWhere('file.deleted_at IS NULL')
+        .andWhere('folder.deleted_at IS NULL')
+        .getCount();
+
+      // Total storage dari file di dalam accessible folders
+      const storageResult = await this.fileRepository
+        .createQueryBuilder('file')
+        .innerJoin('file.folder', 'folder')
+        .select('SUM(file.size)', 'totalSize')
+        .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
+        .andWhere('file.deleted_at IS NULL')
+        .andWhere('folder.deleted_at IS NULL')
+        .getRawOne();
+
+      totalSize = parseInt(storageResult?.totalSize || '0');
+
+      //  milik user ini (15 terbaru)
+      recentFiles = await this.fileRepository
+        .createQueryBuilder('file')
+        .innerJoinAndSelect('file.folder', 'folder')
+        .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
+        .andWhere('file.deleted_at IS NULL')
+        .andWhere('folder.deleted_at IS NULL')
+        .orderBy('file.created_at', 'DESC')
+        .take(15)
+        .getMany();
+    }
+
+    // Get max storage per user setting
+    const maxStorageSetting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
+    const maxStoragePerUser = maxStorageSetting ? parseInt(maxStorageSetting.value, 10) : 104857600;
 
     // Get max folder depth setting
     const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
@@ -188,17 +237,6 @@ export class StatsController {
     const maxFolderDepth = user?.max_folder_depth != null 
       ? user.max_folder_depth 
       : (user?.role?.max_folder_depth != null ? user.role.max_folder_depth : globalMaxFolderDepth);
-
-    //  milik user ini (15 terbaru)
-    const recentFiles = await this.fileRepository
-      .createQueryBuilder('file')
-      .innerJoinAndSelect('file.folder', 'folder')
-      .where('folder.owner_id = :userId', { userId })
-      .andWhere('file.deleted_at IS NULL')
-      .andWhere('folder.deleted_at IS NULL')
-      .orderBy('file.created_at', 'DESC')
-      .take(15)
-      .getMany();
 
     return {
       totalFolders,

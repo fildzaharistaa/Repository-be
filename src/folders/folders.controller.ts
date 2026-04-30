@@ -89,8 +89,8 @@ export class FoldersController {
   }
 
   @Patch(':id')
-  @UseGuards(FolderPermissionGuard)
-  @RequirePermission(PermissionType.UPDATE)
+  // @UseGuards(FolderPermissionGuard)
+  // @RequirePermission(PermissionType.UPDATE)
   async update(@Param('id') id: string, @Body() updateFolderDto: UpdateFolderDto) {
     return this.foldersService.update(id, updateFolderDto);
   }
