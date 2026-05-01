@@ -139,6 +139,13 @@ export class UsersService {
       updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
     }
 
+    if (updateUserDto.email && updateUserDto.email !== user.email) {
+      const existingUser = await this.findByEmail(updateUserDto.email);
+      if (existingUser) {
+        throw new ConflictException('User with this email already exists');
+      }
+    }
+
     // Handle role_id change: load the new Role entity
     // so TypeORM properly updates the relation
     if (updateUserDto.role_id && updateUserDto.role_id !== user.role_id) {
