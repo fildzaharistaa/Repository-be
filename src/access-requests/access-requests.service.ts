@@ -386,7 +386,8 @@ export class AccessRequestsService {
   // GET SHARED FILES
   // =============================
   async getSharedFiles(userId: string) {
-    const approvedRequests = await this.accessRequestRepo.find({
+    // 1. Files shared WITH the user
+    const sharedWithMe = await this.accessRequestRepo.find({
       where: {
         requester: { id: userId },
         status: 'approved',
@@ -394,19 +395,110 @@ export class AccessRequestsService {
       relations: ['file', 'file.folder', 'owner', 'owner.role'],
     });
 
-    // Filter only those that have a file and map them
-    return approvedRequests
-      .filter((r) => r.file)
-      .map((r) => ({
-        ...r.file,
-        owner_name: r.owner?.name || 'Unknown',
-        owner_role: r.owner?.role?.name || 'Unknown',
-        can_read: r.can_read,
-        can_download: r.can_download,
-        can_create: r.can_create,
-        can_update: r.can_update,
-        can_delete: r.can_delete,
-      }));
+    // 2. Files shared BY the user
+    const sharedByMe = await this.accessRequestRepo.find({
+      where: {
+        owner: { id: userId },
+        status: 'approved',
+      },
+      relations: ['file', 'file.folder'],
+    });
+
+    // 3. Files uploaded by OTHERS in MY folders
+    const othersFilesInMyFolders = await this.fileRepo.createQueryBuilder('file')
+      .innerJoinAndSelect('file.folder', 'folder')
+      .leftJoinAndSelect('file.owner', 'owner')
+      .leftJoinAndSelect('owner.role', 'role')
+      .where('folder.owner_id = :userId', { userId })
+      .andWhere('file.owner_id != :userId', { userId })
+      .andWhere('file.deleted_at IS NULL')
+      .andWhere('folder.deleted_at IS NULL')
+      .getMany();
+
+    const resultFiles = new Map<string, any>();
+    const me = await this.userRepo.findOne({ where: { id: userId }, relations: ['role'] });
+
+    // Process sharedWithMe
+    for (const r of sharedWithMe) {
+      if (!r.file) continue;
+      const file = r.file;
+      if (!resultFiles.has(file.id)) {
+        resultFiles.set(file.id, {
+          id: file.id,
+          name: file.name,
+          mime_type: file.mime_type,
+          size: file.size,
+          created_at: file.created_at,
+          updated_at: file.updated_at,
+          owner_id: r.owner?.id,
+          owner_name: r.owner?.name || 'Unknown',
+          owner_email: r.owner?.email || '(email tidak tersedia)',
+          owner_role: r.owner?.role?.name || 'Unknown',
+          can_read: r.can_read,
+          can_download: r.can_download,
+          can_create: r.can_create,
+          can_update: r.can_update,
+          can_delete: r.can_delete,
+        });
+      }
+    }
+
+    // Process sharedByMe
+    for (const r of sharedByMe) {
+      if (!r.file) continue;
+      const file = r.file;
+      if (!resultFiles.has(file.id)) {
+        resultFiles.set(file.id, {
+          id: file.id,
+          name: file.name,
+          mime_type: file.mime_type,
+          size: file.size,
+          created_at: file.created_at,
+          updated_at: file.updated_at,
+          owner_id: userId,
+          owner_name: me?.name || 'Anda',
+          owner_email: me?.email || '(email tidak tersedia)',
+          owner_role: me?.role?.name || 'Unknown',
+          can_read: true,
+          can_download: true,
+          can_create: true,
+          can_update: true,
+          can_delete: true,
+        });
+      }
+    }
+
+    // Process othersFilesInMyFolders
+    for (const file of othersFilesInMyFolders) {
+      if (!resultFiles.has(file.id)) {
+        resultFiles.set(file.id, {
+          id: file.id,
+          name: file.name,
+          mime_type: file.mime_type,
+          size: file.size,
+          created_at: file.created_at,
+          updated_at: file.updated_at,
+          owner_id: file.owner_id,
+          owner_name: file.owner?.name || 'Unknown',
+          owner_email: file.owner?.email || '(email tidak tersedia)',
+          owner_role: file.owner?.role?.name || 'Unknown',
+          can_read: true,
+          can_download: true,
+          can_create: true,
+          can_update: true,
+          can_delete: true,
+        });
+      }
+    }
+
+    // Convert map to array and sort by created_at descending
+    const filesArray = Array.from(resultFiles.values());
+    if (filesArray.length > 0) {
+      console.log('DEBUG: First shared file owner_email:', filesArray[0].owner_email);
+    }
+    filesArray.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    
+    return filesArray;
   }
 
   // =============================
