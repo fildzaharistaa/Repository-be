@@ -67,14 +67,40 @@ export class FoldersService {
     return setting ? parseInt(setting.value, 10) : 5;
   }
 
-  private mapRoleLabelToName(label: string): string {
+  /**
+   * Look up a role by label, using case-insensitive matching.
+   * Handles both short forms (wd1) and long forms (Wakil Dekan 1).
+   */
+  private async findRoleByLabel(label: string): Promise<Role | null> {
     const norm = label.toLowerCase().trim();
-    if (norm === 'wakil dekan 1' || norm === 'wd 1' || norm === 'wd1') return 'wd1';
-    if (norm === 'wakil dekan 2' || norm === 'wd 2' || norm === 'wd2') return 'wd2';
-    if (norm === 'wakil dekan 3' || norm === 'wd 3' || norm === 'wd3') return 'wd3';
-    if (norm.includes('dosen')) return 'dosen';
-    if (norm.includes('tendik')) return 'tendik';
-    return norm;
+
+    // Build list of possible name variants to search for
+    const variants: string[] = [label]; // original label
+
+    if (norm === 'wakil dekan 1' || norm === 'wd 1' || norm === 'wd1') {
+      variants.push('wd1', 'Wakil Dekan 1', 'wakil dekan 1');
+    } else if (norm === 'wakil dekan 2' || norm === 'wd 2' || norm === 'wd2') {
+      variants.push('wd2', 'Wakil Dekan 2', 'wakil dekan 2');
+    } else if (norm === 'wakil dekan 3' || norm === 'wd 3' || norm === 'wd3') {
+      variants.push('wd3', 'Wakil Dekan 3', 'wakil dekan 3');
+    } else if (norm.includes('dosen')) {
+      variants.push('dosen', 'Dosen');
+    } else if (norm.includes('tendik')) {
+      variants.push('tendik', 'Tendik');
+    }
+
+    // Case-insensitive search across all variants
+    return this.roleRepository
+      .createQueryBuilder('role')
+      .where('LOWER(role.name) IN (:...names)', {
+        names: [...new Set(variants.map(v => v.toLowerCase()))],
+      })
+      .getOne();
+  }
+
+  private isDosenOrTendikRole(roleName: string): boolean {
+    const norm = roleName.toLowerCase().trim();
+    return norm.includes('dosen') || norm.includes('tendik');
   }
 
   async create(createFolderDto: CreateFolderDto, userId: string): Promise<Folder> {
@@ -178,14 +204,11 @@ export class FoldersService {
 
     // Auto-share with specified roles (e.g. dosen, tendik)
     if (createFolderDto.share_with_roles && createFolderDto.share_with_roles.length > 0) {
-      for (const roleName of createFolderDto.share_with_roles) {
-        const mappedName = this.mapRoleLabelToName(roleName);
-        const role = await this.roleRepository.findOne({
-          where: { name: mappedName as any },
-        });
+      for (const roleLabel of createFolderDto.share_with_roles) {
+        const role = await this.findRoleByLabel(roleLabel);
 
         if (role) {
-          const isDosenOrTendik = mappedName === 'dosen' || mappedName === 'tendik';
+          const isDosenOrTendik = this.isDosenOrTendikRole(role.name);
           // Check if permission already exists for this role+folder
           const existing = await this.permissionRepository.findOne({
             where: { folder_id: savedFolder.id, role_id: role.id },
@@ -196,7 +219,7 @@ export class FoldersService {
               folder_id: savedFolder.id,
               role_id: role.id,
               can_read: true,
-              can_download: true,
+              can_download: false,
               can_create: isDosenOrTendik,
               can_update: isDosenOrTendik,
               can_delete: isDosenOrTendik,
@@ -468,8 +491,7 @@ export class FoldersService {
     if (updateFolderDto.share_with_roles) {
       const targetRoleIds: string[] = [];
       for (const roleLabel of updateFolderDto.share_with_roles) {
-        const mappedName = this.mapRoleLabelToName(roleLabel);
-        const role = await this.roleRepository.findOne({ where: { name: mappedName as any } });
+        const role = await this.findRoleByLabel(roleLabel);
         if (role) targetRoleIds.push(role.id);
       }
 
@@ -490,12 +512,12 @@ export class FoldersService {
         if (roleId === ownerRoleId) continue;
         if (!currentRolePerms.find(p => p.role_id === roleId)) {
           const role = await this.roleRepository.findOne({ where: { id: roleId } });
-          const isDosenOrTendik = role?.name === 'dosen' || role?.name === 'tendik';
+          const isDosenOrTendik = role ? this.isDosenOrTendikRole(role.name) : false;
           await this.permissionRepository.save({
             folder_id: folder.id,
             role_id: roleId,
             can_read: true,
-            can_download: true,
+            can_download: false,
             can_create: isDosenOrTendik,
             can_update: isDosenOrTendik,
             can_delete: isDosenOrTendik,
@@ -598,7 +620,9 @@ export class FoldersService {
   ): Promise<boolean> {
     const now = new Date();
 
-    const permission = await this.permissionRepository
+    // Fetch ALL matching permissions (both user-level and role-level)
+    // so that user-level overrides (e.g. download) work alongside role-level (view-only)
+    const permissions = await this.permissionRepository
       .createQueryBuilder('fp')
       .where('fp.folder_id = :folderId', { folderId })
       .andWhere(
@@ -606,26 +630,29 @@ export class FoldersService {
         { userId, roleId },
       )
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .getOne();
+      .getMany();
 
-    if (!permission) {
+    if (permissions.length === 0) {
       return false;
     }
 
-    switch (permissionType) {
-      case 'read':
-        return permission.can_read;
-      case 'create':
-        return permission.can_create;
-      case 'update':
-        return permission.can_update;
-      case 'delete':
-        return permission.can_delete;
-      case 'download':
-        return permission.can_download;
-      default:
-        return false;
-    }
+    // OR logic: if ANY permission record grants the requested type, allow it
+    return permissions.some(permission => {
+      switch (permissionType) {
+        case 'read':
+          return permission.can_read;
+        case 'create':
+          return permission.can_create;
+        case 'update':
+          return permission.can_update;
+        case 'delete':
+          return permission.can_delete;
+        case 'download':
+          return permission.can_download;
+        default:
+          return false;
+      }
+    });
   }
 
 }

@@ -96,33 +96,36 @@ export class FolderPermissionGuard implements CanActivate {
       return true;
     }
 
-    // cek permission table
-    const permission = await this.permissionRepository
+    // cek permission table (both user-level and role-level)
+    const permissions = await this.permissionRepository
       .createQueryBuilder('fp')
       .where('fp.folder_id = :folderId', { folderId })
-      .andWhere('fp.user_id = :userId', { userId })
+      .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .getOne();
+      .getMany();
 
-    if (!permission) {
+    if (permissions.length === 0) {
       return false;
     }
 
-    switch (permissionType) {
-      case PermissionType.READ:
-        return permission.can_read;
+    // OR logic: if ANY matching permission grants the requested type, allow
+    return permissions.some(permission => {
+      switch (permissionType) {
+        case PermissionType.READ:
+          return permission.can_read;
 
-      case PermissionType.CREATE:
-        return permission.can_create;
+        case PermissionType.CREATE:
+          return permission.can_create;
 
-      case PermissionType.UPDATE:
-        return permission.can_update;
+        case PermissionType.UPDATE:
+          return permission.can_update;
 
-      case PermissionType.DELETE:
-        return permission.can_delete;
+        case PermissionType.DELETE:
+          return permission.can_delete;
 
-      default:
-        return false;
-    }
+        default:
+          return false;
+      }
+    });
   }
 }
