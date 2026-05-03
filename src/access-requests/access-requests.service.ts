@@ -386,11 +386,12 @@ export class AccessRequestsService {
   // GET SHARED FILES
   // =============================
   async getSharedFiles(userId: string) {
-    // 1. Files shared WITH the user
+    // 1. Files shared WITH the user (only those with View permission)
     const sharedWithMe = await this.accessRequestRepo.find({
       where: {
         requester: { id: userId },
         status: 'approved',
+        can_read: true,
       },
       relations: ['file', 'file.folder', 'owner', 'owner.role'],
     });
