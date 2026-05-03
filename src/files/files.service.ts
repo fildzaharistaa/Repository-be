@@ -24,8 +24,21 @@ export class FilesService {
     const fullUser = await this.fileRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
     const roleName = fullUser?.role?.name?.toLowerCase() || '';
     const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
+    
     if (isDosenOrTendik && file.owner_id !== user.id) {
-      throw new ForbiddenException('Strict Isolation: Anda tidak dapat mengakses file milik pengguna lain di folder ini');
+      // Check if there is an approved share for this specific file
+      const fileShare = await this.fileRepository.manager.findOne(AccessRequest, {
+        where: {
+          requester: { id: user.id },
+          file: { id: file.id },
+          status: 'approved',
+          can_read: true
+        }
+      });
+
+      if (!fileShare) {
+        throw new ForbiddenException('Strict Isolation: Anda tidak dapat mengakses file milik pengguna lain di folder ini');
+      }
     }
   }
 

@@ -455,6 +455,15 @@ export class FoldersService {
       folder.name = updateFolderDto.name;
     }
 
+    // Fetch the folder owner with their role to protect owner's own permissions
+    const ownerUser = folder.owner_id
+      ? await this.folderRepository.manager.getRepository(User).findOne({
+        where: { id: folder.owner_id },
+        relations: ['role'],
+      })
+      : null;
+    const ownerRoleId = ownerUser?.role?.id || null;
+
     // --- SINKRONISASI GRUP ROLE SHARING ---
     if (updateFolderDto.share_with_roles) {
       const targetRoleIds: string[] = [];
@@ -465,8 +474,11 @@ export class FoldersService {
       }
 
       // Hapus izin role yang tidak ada di targetRoleIds untuk folder ini
+      // PENTING: Jangan hapus permission role milik owner folder sendiri
       const currentRolePerms = folder.permissions.filter(p => !!p.role_id);
       for (const p of currentRolePerms) {
+        // Protect owner's own role permission
+        if (p.role_id === ownerRoleId) continue;
         if (!targetRoleIds.includes(p.role_id!)) {
           await this.permissionRepository.delete(p.id);
         }
@@ -474,6 +486,8 @@ export class FoldersService {
 
       // Tambahkan yang belum ada
       for (const roleId of targetRoleIds) {
+        // Skip if it's the owner's own role (already has full permissions)
+        if (roleId === ownerRoleId) continue;
         if (!currentRolePerms.find(p => p.role_id === roleId)) {
           const role = await this.roleRepository.findOne({ where: { id: roleId } });
           const isDosenOrTendik = role?.name === 'dosen' || role?.name === 'tendik';

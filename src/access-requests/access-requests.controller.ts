@@ -83,6 +83,14 @@ export class AccessRequestsController {
   }
 
   // =============================
+  // GET FILE SHARES
+  // =============================
+  @Get('files/:id/shares')
+  getFileShares(@Param('id') fileId: string) {
+    return this.accessRequestsService.getFileShares(fileId);
+  }
+
+  // =============================
   // OWNER LIHAT PENDING REQUEST
   // =============================
   @Get('pending')

@@ -554,7 +554,25 @@ export class AccessRequestsService {
       }
     }
 
-    // 3. Grant access to all identified users
+    // 3. Sync existing shares: Remove shares for users no longer in targetUserIds
+    const existingShares = await this.accessRequestRepo.find({
+      where: { file: { id: fileId }, status: 'approved' },
+      relations: ['requester']
+    });
+
+    for (const share of existingShares) {
+      if (share.requester && !targetUserIds.has(share.requester.id)) {
+        // Option A: Delete the request
+        // await this.accessRequestRepo.delete(share.id);
+        
+        // Option B: Mark as rejected or just remove the approval
+        share.status = 'rejected';
+        share.response_message = 'Akses dicabut oleh pemilik';
+        await this.accessRequestRepo.save(share);
+      }
+    }
+
+    // 4. Grant/Update access to all identified users
     for (const userId of targetUserIds) {
       const targetUser = await this.userRepo.findOne({ where: { id: userId }, relations: ['role'] });
       if (!targetUser) continue;
@@ -618,6 +636,18 @@ export class AccessRequestsService {
       message: `${results.length} users granted access to file`,
       count: results.length
     };
+  }
+    // =============================
+  // GET FILE SHARES
+  // =============================
+  async getFileShares(fileId: string) {
+    return this.accessRequestRepo.find({
+      where: {
+        file: { id: fileId },
+        status: 'approved'
+      },
+      relations: ['requester']
+    });
   }
 
   // =============================
