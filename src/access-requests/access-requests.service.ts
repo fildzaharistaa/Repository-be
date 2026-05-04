@@ -324,7 +324,7 @@ export class AccessRequestsService {
         { requester: { id: userId }, status: 'approved' },
         { requester: { id: userId }, status: 'rejected' },
       ],
-      relations: ['folder', 'file'],
+      relations: ['folder', 'file', 'requester', 'requester.role'],
       order: { createdAt: 'DESC' },
     });
 
@@ -343,6 +343,8 @@ export class AccessRequestsService {
     const normalUpdates = myUpdatedRequests.map((r) => ({
       id: r.id,
       type: 'update' as const,
+      requesterName: r.requester?.name || 'Unknown',
+      requesterEmail: r.requester?.email || '',
       resourceName: r.folder?.name || r.file?.name || 'Unknown',
       resourceType: r.folder ? 'folder' : 'file' as const,
       status: r.status,
@@ -363,6 +365,7 @@ export class AccessRequestsService {
     const allUpdates = [...normalUpdates, ...directShareUpdates].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
+
 
     return {
       incoming: incomingRequests.map((r) => ({
