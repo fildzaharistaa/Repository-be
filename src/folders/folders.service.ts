@@ -179,28 +179,11 @@ export class FoldersService {
       }
     }
 
-    // Inherit permissions from parent folder if exists
-    if (createFolderDto.parent_id) {
-      const parentPermissions = await this.permissionRepository.find({
-        where: { folder_id: createFolderDto.parent_id }
-      });
-      for (const perm of parentPermissions) {
-        // Skip copying the owner's permission since we already added the new owner
-        if (perm.user_id === userId) continue;
-
-        // Save copied permission
-        await this.permissionRepository.save({
-          folder_id: savedFolder.id,
-          user_id: perm.user_id,
-          role_id: perm.role_id,
-          can_read: perm.can_read,
-          can_create: perm.can_create,
-          can_update: perm.can_update,
-          can_delete: perm.can_delete,
-          can_download: perm.can_download,
-        });
-      }
-    }
+    // NOTE: Sub-folders do NOT auto-inherit parent permissions.
+    // Each sub-folder's permissions are explicitly set via share_with_roles
+    // and user_permissions. This ensures granular access control where
+    // a parent folder can share with Dosen+Tendik, but a sub-folder
+    // can be restricted to only Tendik.
 
     // Auto-share with specified roles (e.g. dosen, tendik)
     if (createFolderDto.share_with_roles && createFolderDto.share_with_roles.length > 0) {
@@ -264,6 +247,26 @@ export class FoldersService {
     const folder = await this.folderRepository.findOne({
       where: { id },
       relations: ['parent', 'children', 'permissions', 'permissions.role', 'permissions.user'],
+    });
+
+    if (!folder) {
+      throw new NotFoundException('Folder not found');
+    }
+
+    return folder;
+  }
+
+  /**
+   * Get a single folder with its details for a specific user.
+   * All children are shown (so user can see subfolders exist), but
+   * access control is enforced when the user tries to navigate into
+   * a subfolder - the getFiles endpoint checks permissions and returns
+   * 403 "Akses Ditolak" if the user lacks access.
+   */
+  async findOneForUser(id: string, user: User): Promise<Folder> {
+    const folder = await this.folderRepository.findOne({
+      where: { id },
+      relations: ['parent', 'children', 'permissions', 'permissions.role', 'permissions.user', 'owner'],
     });
 
     if (!folder) {

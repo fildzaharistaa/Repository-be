@@ -56,8 +56,8 @@ export class FoldersController {
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    return this.foldersService.findOne(id);
+  async findOne(@Param('id') id: string, @Request() req: RequestWithUser) {
+    return this.foldersService.findOneForUser(id, req.user);
   }
 
   @Post()
