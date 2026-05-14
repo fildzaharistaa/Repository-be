@@ -14,6 +14,8 @@ import { FoldersService } from './folders.service';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { FolderPermissionGuard } from '../common/guards/folder-permission.guard';
@@ -61,19 +63,20 @@ export class FoldersController {
   }
 
   @Post()
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('folder.create')
   async create(
     @Body() createFolderDto: CreateFolderDto,
     @Request() req: RequestWithUser,
   ) {
-    // Admin can create root folders without permission check
-    const roleName = req.user.role?.name?.toLowerCase();
-    const isAdmin = roleName === 'admin' || roleName === 'super admin' || roleName === 'superadmin';
-    
-    // Check permission if parent_id is provided (skip for admin)
-    if (createFolderDto.parent_id && !isAdmin) {
+    // Check folder-level permission if creating inside a parent folder
+    const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id;
+    const isAdminRole = !!(req.user.role?.is_admin);
+
+    if (createFolderDto.parent_id && !isAdminRole) {
       const hasPermission = await this.foldersService.checkPermission(
         req.user.id,
-        req.user.role_id,
+        activeRoleId,
         createFolderDto.parent_id,
         'create',
       );

@@ -2,6 +2,7 @@ import {Entity,PrimaryGeneratedColumn,Column,ManyToOne,OneToMany,CreateDateColum
 import { Role } from './role.entity';
 import { FolderPermission } from './folder-permission.entity';
 import { Folder } from './folder.entity';
+import { UserRole } from './user-role.entity';
 
 @Entity('users')
 export class User {
@@ -33,6 +34,9 @@ email: string;
 
   @OneToMany(() => Folder, (folder) => folder.owner)
   ownedFolders: Folder[];
+
+  @OneToMany(() => UserRole, (ur) => ur.user)
+  userRoles: UserRole[];
 
   @Column({ type: 'int', nullable: true })
   max_folder_depth: number | null;

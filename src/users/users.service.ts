@@ -6,9 +6,9 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
-import { User, Role } from '../entities';
+import { User, Role, UserRole, UserRoleStatus } from '../entities';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { FoldersService } from '../folders/folders.service';
@@ -20,6 +20,8 @@ export class UsersService {
     private userRepository: Repository<User>,
     @InjectRepository(Role)
     private roleRepository: Repository<Role>,
+    @InjectRepository(UserRole)
+    private userRoleRepository: Repository<UserRole>,
     @Inject(forwardRef(() => FoldersService))
     private foldersService: FoldersService,
   ) { }
@@ -84,6 +86,25 @@ export class UsersService {
     });
 
     const savedUser = await this.userRepository.save(user);
+
+    // Auto-create primary UserRole junction record so PermissionCacheService can find it
+    if (savedUser.role_id) {
+      const existingUR = await this.userRoleRepository.findOne({
+        where: { user_id: savedUser.id, role_id: savedUser.role_id, deleted_at: IsNull() },
+      });
+      if (!existingUR) {
+        await this.userRoleRepository.save(
+          this.userRoleRepository.create({
+            user_id: savedUser.id,
+            role_id: savedUser.role_id,
+            is_primary: true,
+            status: UserRoleStatus.ACTIVE,
+            assigned_at: new Date(),
+          }),
+        );
+      }
+    }
+
     const userWithRole = await this.findOne(savedUser.id);
 
     return userWithRole;

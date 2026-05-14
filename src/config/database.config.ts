@@ -1,6 +1,16 @@
 import { registerAs } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
-import { User, Role, Folder, File, FolderPermission, SystemSetting } from '../entities';
+import { 
+  User, 
+  Role, 
+  Folder, 
+  File, 
+  FolderPermission, 
+  SystemSetting,
+  Permission,
+  RolePermission,
+  UserRole
+} from '../entities';
 import { AccessRequest } from '../access-requests/access-request.entity';
 
 export default registerAs(
@@ -12,9 +22,19 @@ export default registerAs(
     username: process.env.DB_USERNAME || 'postgres',
     password: process.env.DB_PASSWORD || 'postgres',
     database: process.env.DB_NAME || 'campus_repository',
-    entities: [User, Role, Folder, File, FolderPermission, AccessRequest, SystemSetting],
+    entities: [
+      User, 
+      Role, 
+      Folder, 
+      File, 
+      FolderPermission, 
+      AccessRequest, 
+      SystemSetting,
+      Permission,
+      RolePermission,
+      UserRole
+    ],
     synchronize: process.env.NODE_ENV !== 'production',
     logging: false,
   }),
 );
-

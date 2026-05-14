@@ -66,6 +66,7 @@ export class AuthService {
       email: user.email,
       role: user.role?.name || '',
       role_id: user.role_id || '',
+      active_role_id: user.role_id || undefined,
     };
 
     return {

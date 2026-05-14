@@ -130,15 +130,10 @@ export class FoldersService {
       relations: ['role'],
     });
 
-    const roleName = user?.role?.name?.toLowerCase() || '';
-    if (roleName.includes('dosen') || roleName.includes('tendik')) {
-      throw new ForbiddenException('Role Anda tidak diizinkan untuk membuat folder.');
-    }
-
     const folder = this.folderRepository.create({
       ...createFolderDto,
       owner: { id: userId } as User,
-      unit: user?.role?.name.toLowerCase().substring(0, 50) || 'general',
+      unit: user?.role?.name?.toLowerCase().substring(0, 50) || 'general',
     });
 
     const savedFolder = await this.folderRepository.save(folder);

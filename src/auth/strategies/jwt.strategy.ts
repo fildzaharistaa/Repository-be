@@ -39,6 +39,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User not found');
     }
 
+    // Additive: expose active_role_id from JWT (set via /users/switch-role).
+    // Does not alter user.role / user.role_id used by legacy code.
+    if (payload && payload.active_role_id) {
+      (user as any).active_role_id = payload.active_role_id;
+    }
+
     return user;
   }
 }
