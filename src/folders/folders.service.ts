@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm';
@@ -103,7 +104,7 @@ export class FoldersService {
     return norm.includes('dosen') || norm.includes('tendik');
   }
 
-  async create(createFolderDto: CreateFolderDto, userId: string): Promise<Folder> {
+  async create(createFolderDto: CreateFolderDto, userId: string, activeRoleId?: string): Promise<Folder> {
     if (createFolderDto.parent_id) {
       const parent = await this.folderRepository.findOne({
         where: { id: createFolderDto.parent_id },
@@ -124,6 +125,18 @@ export class FoldersService {
       );
     }
 
+    // Check direct children count limit (same value as depth limit)
+    if (createFolderDto.parent_id) {
+      const childCount = await this.folderRepository.count({
+        where: { parent_id: createFolderDto.parent_id, deleted_at: IsNull() },
+      });
+      if (childCount >= maxDepth) {
+        throw new BadRequestException(
+          `Maksimal hanya ${maxDepth} subfolder dalam folder ini`,
+        );
+      }
+    }
+
     // Get user with role for unit assignment
     const user = await this.folderRepository.manager.getRepository(User).findOne({
       where: { id: userId },
@@ -132,6 +145,7 @@ export class FoldersService {
 
     const folder = this.folderRepository.create({
       ...createFolderDto,
+      role_id: activeRoleId || null,
       owner: { id: userId } as User,
       unit: user?.role?.name?.toLowerCase().substring(0, 50) || 'general',
     });
@@ -272,32 +286,14 @@ export class FoldersService {
   }
 
   async findAllAccessible(user: User): Promise<Folder[]> {
-    const accessibleFolderIds = await this.getAccessibleFolderIds(user);
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+    if (!activeRoleId) return [];
 
-    if (accessibleFolderIds.length === 0) {
-      return [];
-    }
-
-    const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
-    const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
-
-    const folders = await this.folderRepository.find({
-      where: { id: In(accessibleFolderIds) },
+    return this.folderRepository.find({
+      where: { role_id: activeRoleId, deleted_at: IsNull() },
       relations: ['parent', 'owner', 'owner.role'],
       order: { name: 'ASC' },
     });
-
-    if (isWD) {
-      return folders.filter(f => {
-        if (f.owner_id === user.id) return true;
-        if (f.owner?.role?.id === fullUser?.role?.id) return true;
-        const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
-        const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
-        return !isOwnerWD;
-      });
-    }
-
-    return folders;
   }
 
   async findAllForAdmin(): Promise<Folder[]> {
@@ -348,60 +344,44 @@ export class FoldersService {
   }
 
   async getTree(user: User): Promise<FolderTreeNode[]> {
-    const accessibleFolderIds = await this.getAccessibleFolderIds(user);
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+    if (!activeRoleId) return [];
 
-    if (accessibleFolderIds.length === 0) {
-      return [];
-    }
-
-    const foldersRaw = await this.folderRepository.find({
-      where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
-      relations: ['owner', 'owner.role'],
+    // Role workspace: only folders that belong to the active role
+    const folders = await this.folderRepository.find({
+      where: { role_id: activeRoleId, deleted_at: IsNull() },
       order: { name: 'ASC' },
     });
-
-    const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
-    const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
-
-    let folders: Folder[] = [];
-    if (isWD) {
-      folders = foldersRaw.filter(f => {
-        if (f.owner_id === user.id) return true;
-        if (f.owner?.role?.id === fullUser?.role?.id) return true;
-        const ownerRoleName = f.owner?.role?.name?.toLowerCase() || '';
-        const isOwnerWD = ownerRoleName.includes('wd') || ownerRoleName.includes('wakil dekan');
-        return !isOwnerWD;
-      });
-    } else {
-      folders = foldersRaw.filter(f => f.owner_id === user.id || f.owner?.role?.id === fullUser?.role?.id);
-    }
 
     return this.buildTree(folders);
   }
 
   async getSharedTree(user: User): Promise<FolderTreeNode[]> {
-    const accessibleFolderIds = await this.getAccessibleFolderIds(user);
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+    const now = new Date();
 
-    if (accessibleFolderIds.length === 0) {
-      return [];
-    }
+    // Shared folders: folders granted to my role via FolderPermission but owned by a different role
+    const permissions = await this.permissionRepository
+      .createQueryBuilder('fp')
+      .select('fp.folder_id', 'folder_id')
+      .where('fp.role_id = :roleId', { roleId: activeRoleId })
+      .andWhere('fp.can_read = true')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .getRawMany();
 
-    // Get only SHARED folders (user has permission but is NOT the owner)
-    const foldersRaw = await this.folderRepository.find({
-      where: {
-        id: In(accessibleFolderIds),
-        deleted_at: IsNull()
-      },
+    const sharedIds = permissions.map((p) => p.folder_id);
+    if (!sharedIds.length) return [];
+
+    const folders = await this.folderRepository.find({
+      where: { id: In(sharedIds), deleted_at: IsNull() },
       relations: ['owner', 'owner.role'],
       order: { name: 'ASC' },
     });
 
-    const fullUser = await this.folderRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
-    const isWD = fullUser?.role?.name?.toLowerCase().includes('wd') || fullUser?.role?.name?.toLowerCase().includes('wakil dekan');
+    // Only show folders that belong to a DIFFERENT role workspace
+    const sharedFromOtherRole = folders.filter((f) => f.role_id !== activeRoleId);
 
-    const folders = foldersRaw.filter(f => f.owner_id !== user.id && f.owner?.role?.id !== fullUser?.role?.id);
-
-    return this.buildTreeWithOwner(folders);
+    return this.buildTreeWithOwner(sharedFromOtherRole);
   }
 
   private buildTree(folders: Folder[]): FolderTreeNode[] {

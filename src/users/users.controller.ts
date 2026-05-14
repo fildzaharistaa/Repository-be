@@ -25,6 +25,7 @@ import type { RequestWithUser } from '../common/interfaces/request-with-user.int
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { UserRole, UserRoleStatus } from '../entities';
 import type { JwtPayload } from '../common/interfaces/jwt-payload.interface';
+import { PermissionCacheService } from '../super-admin/shared/permission-cache.service';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
@@ -34,6 +35,7 @@ export class UsersController {
     @InjectRepository(UserRole)
     private readonly userRoleRepo: Repository<UserRole>,
     private readonly jwtService: JwtService,
+    private readonly permCache: PermissionCacheService,
   ) {}
 
   @Get('profile')
@@ -61,6 +63,16 @@ export class UsersController {
     return {
       active_role_id: activeRoleId,
       assignments,
+    };
+  }
+
+  @Get('my-permissions')
+  async getMyPermissions(@Request() req: RequestWithUser) {
+    const activeRoleId = (req.user as any).active_role_id || req.user.role_id || null;
+    const { slugs, isWildcard } = await this.permCache.getEffective(req.user.id, activeRoleId);
+    return {
+      permissions: isWildcard ? ['*'] : Array.from(slugs),
+      isWildcard,
     };
   }
 

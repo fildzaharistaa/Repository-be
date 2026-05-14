@@ -13,6 +13,7 @@ import {
 import { User } from './user.entity';
 import { File } from './file.entity';
 import { FolderPermission } from './folder-permission.entity';
+import { Role } from './role.entity';
 
 @Entity('folders')
 export class Folder {
@@ -34,6 +35,14 @@ export class Folder {
     default: 'general'
   })
   unit: string;
+
+  // Role workspace ownership — which role this folder belongs to
+  @Column({ type: 'uuid', nullable: true })
+  role_id: string | null;
+
+  @ManyToOne(() => Role, { nullable: true, eager: false })
+  @JoinColumn({ name: 'role_id' })
+  role: Role | null;
 
   // 🔥 OWNER UNTUK FOLDER PRIBADI
   @Column({ type: 'uuid', nullable: true })

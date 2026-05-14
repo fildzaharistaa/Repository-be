@@ -15,7 +15,8 @@ import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
-import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
+import { RequirePermissions, RequireAnyPermission } from '../common/decorators/require-permissions.decorator';
+import { PermissionCacheService } from '../super-admin/shared/permission-cache.service';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { FolderPermissionGuard } from '../common/guards/folder-permission.guard';
@@ -26,7 +27,10 @@ import type { RequestWithUser } from '../common/interfaces/request-with-user.int
 @Controller('folders')
 @UseGuards(JwtAuthGuard)
 export class FoldersController {
-  constructor(private readonly foldersService: FoldersService) {}
+  constructor(
+    private readonly foldersService: FoldersService,
+    private readonly permCache: PermissionCacheService,
+  ) {}
 
   @Get('tree')
   async getTree(@Request() req: RequestWithUser) {
@@ -64,31 +68,36 @@ export class FoldersController {
 
   @Post()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('folder.create')
+  @RequireAnyPermission('folder.create', 'folder.create_subfolder')
   async create(
     @Body() createFolderDto: CreateFolderDto,
     @Request() req: RequestWithUser,
   ) {
-    // Check folder-level permission if creating inside a parent folder
     const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id;
     const isAdminRole = !!(req.user.role?.is_admin);
 
-    if (createFolderDto.parent_id && !isAdminRole) {
-      const hasPermission = await this.foldersService.checkPermission(
-        req.user.id,
-        activeRoleId,
-        createFolderDto.parent_id,
-        'create',
-      );
-
-      if (!hasPermission) {
-        throw new ForbiddenException(
-          'You do not have create permission for the parent folder',
+    if (!isAdminRole) {
+      if (!createFolderDto.parent_id) {
+        // Root folder: requires folder.create specifically
+        const { slugs } = await this.permCache.getEffective(req.user.id, activeRoleId);
+        if (!this.permCache.hasSlug(slugs, 'folder.create')) {
+          throw new ForbiddenException('Membuat folder root membutuhkan permission folder.create');
+        }
+      } else {
+        // Subfolder: check folder-level create permission on parent
+        const hasPermission = await this.foldersService.checkPermission(
+          req.user.id,
+          activeRoleId,
+          createFolderDto.parent_id,
+          'create',
         );
+        if (!hasPermission) {
+          throw new ForbiddenException('You do not have create permission for the parent folder');
+        }
       }
     }
 
-    return this.foldersService.create(createFolderDto, req.user.id);
+    return this.foldersService.create(createFolderDto, req.user.id, activeRoleId);
   }
 
   @Patch(':id')
