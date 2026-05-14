@@ -50,6 +50,7 @@ export class UserRolesService {
         existing.suspended_reason = null;
         existing.suspended_at = null;
         if (dto.isPrimary) existing.is_primary = true;
+        if (dto.description !== undefined) existing.description = dto.description || null;
         ur = await manager.save(existing);
       } else {
         const created = manager.create(UserRole, {
@@ -59,6 +60,7 @@ export class UserRolesService {
           status: UserRoleStatus.ACTIVE,
           expires_at: dto.expiresAt ? new Date(dto.expiresAt) : null,
           assigned_by: actorId ?? null,
+          description: dto.description || null,
         });
         ur = await manager.save(created);
       }

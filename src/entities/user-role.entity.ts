@@ -45,6 +45,9 @@ export class UserRole {
   @Column({ type: 'varchar', length: 25, default: UserRoleStatus.ACTIVE })
   status: UserRoleStatus;
 
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  description: string | null;
+
   @Column({ type: 'varchar', length: 500, nullable: true })
   suspended_reason: string | null;
 
