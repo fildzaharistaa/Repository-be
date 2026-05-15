@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { Folder } from './folder.entity';
 import { User } from './user.entity';
+import { Role } from './role.entity';
 
 @Entity('files')
 export class File {
@@ -41,6 +42,13 @@ export class File {
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'owner_id' })
   owner: User | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  uploaded_by_role_id: string | null;
+
+  @ManyToOne(() => Role, { nullable: true, eager: false })
+  @JoinColumn({ name: 'uploaded_by_role_id' })
+  uploaded_by_role: Role | null;
 
   @CreateDateColumn()
   created_at: Date;

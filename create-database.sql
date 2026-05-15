@@ -63,10 +63,15 @@ CREATE TABLE IF NOT EXISTS files (
     mime_type VARCHAR(100) NOT NULL,
     size BIGINT NOT NULL,
     folder_id UUID NOT NULL,
+    owner_id UUID,
+    uploaded_by_role_id UUID,
+    last_accessed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP,
-    CONSTRAINT fk_files_folder FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
+    CONSTRAINT fk_files_folder FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
+    CONSTRAINT fk_files_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT fk_files_uploaded_by_role FOREIGN KEY (uploaded_by_role_id) REFERENCES roles(id) ON DELETE SET NULL
 );
 
 -- ============================================

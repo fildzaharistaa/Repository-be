@@ -152,26 +152,22 @@ export class FoldersService {
 
     const savedFolder = await this.folderRepository.save(folder);
 
-    // Automatically grant full permissions to the creator
-    await this.permissionRepository.save({
-      folder_id: savedFolder.id,
-      user_id: userId,
-      can_read: true,
-      can_create: true,
-      can_update: true,
-      can_delete: true,
-      can_download: true,
-    });
-
-    // Automatically grant full permissions to the creator's role to integrate folders for users with the same role
-    if (user?.role?.id) {
+    // Grant full permissions to the creator's active role so all users of that role inherit access.
+    // We intentionally do NOT create a separate user-level permission with role_id=NULL here.
+    // A null role_id would mean "accessible in any role context", which causes cross-role leakage:
+    // a folder created under "Koordinator Prodi SI" would appear in the creator's "Dosen"
+    // Shared Folders because getSharedTree() matches fp.role_id IS NULL for user grants.
+    // The role-level permission below is sufficient — it grants access only when the creator
+    // is operating under the exact role the folder was created in.
+    const creatorRoleId = activeRoleId || user?.role?.id || null;
+    if (creatorRoleId) {
       const existingRolePerm = await this.permissionRepository.findOne({
-        where: { folder_id: savedFolder.id, role_id: user.role.id }
+        where: { folder_id: savedFolder.id, role_id: creatorRoleId }
       });
       if (!existingRolePerm) {
         await this.permissionRepository.save({
           folder_id: savedFolder.id,
-          role_id: user.role.id,
+          role_id: creatorRoleId,
           can_read: true,
           can_create: true,
           can_update: true,
@@ -221,11 +217,18 @@ export class FoldersService {
       }
     }
 
-    // Assign specific user permissions 
+    // Assign specific user permissions
+    // Permission identity = (user_id + role_id): scopes the grant to a specific user
+    // acting in a specific role context. role_id IS NULL means "any role context".
     if (createFolderDto.user_permissions && createFolderDto.user_permissions.length > 0) {
       for (const perm of createFolderDto.user_permissions) {
+        const permRoleId: string | null = perm.role_id ?? null;
         const existing = await this.permissionRepository.findOne({
-          where: { folder_id: savedFolder.id, user_id: perm.user_id },
+          where: {
+            folder_id: savedFolder.id,
+            user_id: perm.user_id,
+            role_id: permRoleId === null ? IsNull() : permRoleId,
+          },
         });
 
         if (existing) {
@@ -239,11 +242,50 @@ export class FoldersService {
           await this.permissionRepository.save({
             folder_id: savedFolder.id,
             user_id: perm.user_id,
+            role_id: permRoleId,
             can_read: !!perm.can_read,
             can_create: !!perm.can_create,
             can_update: !!perm.can_update,
             can_delete: !!perm.can_delete,
             can_download: !!perm.can_download,
+          });
+        }
+      }
+    }
+
+    // Auto-create default subfolders and copy all parent permissions to each one.
+    // Permissions are fetched AFTER all parent grants/shares are saved, so every
+    // subfolder receives the complete set (creator user, creator role, shared roles,
+    // individual user overrides) without any manual re-configuration.
+    if (createFolderDto.initial_subfolders?.length) {
+      const parentPerms = await this.permissionRepository.find({
+        where: { folder_id: savedFolder.id },
+      });
+
+      for (const subName of createFolderDto.initial_subfolders) {
+        const trimmed = subName.trim();
+        if (!trimmed) continue;
+
+        const subFolder = this.folderRepository.create({
+          name: trimmed,
+          parent_id: savedFolder.id,
+          role_id: savedFolder.role_id,
+          owner: { id: userId } as User,
+          unit: savedFolder.unit,
+        });
+        const savedSub = await this.folderRepository.save(subFolder);
+
+        for (const perm of parentPerms) {
+          await this.permissionRepository.save({
+            folder_id: savedSub.id,
+            user_id: perm.user_id ?? null,
+            role_id: perm.role_id ?? null,
+            can_read: perm.can_read,
+            can_create: perm.can_create,
+            can_update: perm.can_update,
+            can_delete: perm.can_delete,
+            can_download: perm.can_download,
+            expires_at: perm.expires_at ?? null,
           });
         }
       }
@@ -272,7 +314,7 @@ export class FoldersService {
    * a subfolder - the getFiles endpoint checks permissions and returns
    * 403 "Akses Ditolak" if the user lacks access.
    */
-  async findOneForUser(id: string, user: User): Promise<Folder> {
+  async findOneForUser(id: string, _user: User): Promise<Folder> {
     const folder = await this.folderRepository.findOne({
       where: { id },
       relations: ['parent', 'children', 'permissions', 'permissions.role', 'permissions.user', 'owner'],
@@ -356,32 +398,61 @@ export class FoldersService {
     return this.buildTree(folders);
   }
 
-  async getSharedTree(user: User): Promise<FolderTreeNode[]> {
+  async getSharedTree(user: User): Promise<any[]> {
     const activeRoleId = (user as any).active_role_id || user.role_id;
     const now = new Date();
 
-    // Shared folders: folders granted to my role via FolderPermission but owned by a different role
-    const permissions = await this.permissionRepository
+    // --- 1. Role-based shared folders ---
+    // Folders where a permission record targets the active role (user_id is irrelevant here;
+    // the grant is to the entire role group).
+    const rolePerms = await this.permissionRepository
       .createQueryBuilder('fp')
       .select('fp.folder_id', 'folder_id')
       .where('fp.role_id = :roleId', { roleId: activeRoleId })
+      .andWhere('fp.user_id IS NULL')
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
       .getRawMany();
 
-    const sharedIds = permissions.map((p) => p.folder_id);
-    if (!sharedIds.length) return [];
+    // --- 2. User-specific shared folders ---
+    // Explicit personal grants: permission targets this user, optionally scoped to their
+    // current active role or with no role restriction (role_id IS NULL).
+    const userPerms = await this.permissionRepository
+      .createQueryBuilder('fp')
+      .select('fp.folder_id', 'folder_id')
+      .where('fp.user_id = :userId', { userId: user.id })
+      .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
+      .andWhere('fp.can_read = true')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .getRawMany();
+
+    const roleSharedIds = new Set(rolePerms.map((p) => p.folder_id));
+    const userSharedIds = new Set(userPerms.map((p) => p.folder_id));
+    const allSharedIds = [...new Set([...roleSharedIds, ...userSharedIds])];
+
+    if (!allSharedIds.length) return [];
 
     const folders = await this.folderRepository.find({
-      where: { id: In(sharedIds), deleted_at: IsNull() },
-      relations: ['owner', 'owner.role'],
+      where: { id: In(allSharedIds), deleted_at: IsNull() },
+      relations: ['owner', 'owner.role', 'role'],
       order: { name: 'ASC' },
     });
 
-    // Only show folders that belong to a DIFFERENT role workspace
-    const sharedFromOtherRole = folders.filter((f) => f.role_id !== activeRoleId);
+    // Filter logic:
+    //  - Explicit user-level grants (userSharedIds) always show — this covers cross-role
+    //    self-sharing where an owner explicitly grants access to their own folder for a
+    //    different role context (e.g. WD2 Bambang grants Dosen Bambang access).
+    //  - Role-only access on owner's folders: exclude — the owner already sees those via
+    //    "My Folders" in their workspace tree. This prevents implicit auto-duplication.
+    //  - Role-based shares on others' folders: only show when the workspace differs from
+    //    the active role (same-workspace folders are already visible in "My Folders").
+    const sharedFolders = folders.filter((f) => {
+      if (userSharedIds.has(f.id)) return true;
+      if (f.owner_id === user.id) return false;
+      return f.role_id !== activeRoleId;
+    });
 
-    return this.buildTreeWithOwner(sharedFromOtherRole);
+    return this.buildTreeWithOwner(sharedFolders);
   }
 
   private buildTree(folders: Folder[]): FolderTreeNode[] {
@@ -428,7 +499,7 @@ export class FoldersService {
         updated_at: folder.updated_at,
         owner_name: folder.owner?.name || 'Unknown',
         owner_email: folder.owner?.email || '',
-        owner_role: folder.owner?.role?.name || 'Unknown',
+        owner_role: folder.role?.name || folder.owner?.role?.name || 'Unknown',
         children: [],
       });
     });
@@ -456,14 +527,16 @@ export class FoldersService {
       folder.name = updateFolderDto.name;
     }
 
-    // Fetch the folder owner with their role to protect owner's own permissions
+    // Protect the folder's workspace role (the role the folder was created under).
+    // Prefer folder.role_id because it reflects the active role at creation time,
+    // not the owner's current primary role (which may differ for multi-role users).
     const ownerUser = folder.owner_id
       ? await this.folderRepository.manager.getRepository(User).findOne({
         where: { id: folder.owner_id },
         relations: ['role'],
       })
       : null;
-    const ownerRoleId = ownerUser?.role?.id || null;
+    const ownerRoleId = folder.role_id || ownerUser?.role?.id || null;
 
     // --- SINKRONISASI GRUP ROLE SHARING ---
     if (updateFolderDto.share_with_roles) {
@@ -505,21 +578,31 @@ export class FoldersService {
     }
 
     // --- SINKRONISASI USER PERMISSIONS ---
+    // Identity key = (user_id + role_id) pair so that role-scoped grants are
+    // handled independently from unscoped (role_id IS NULL) grants.
     if (updateFolderDto.user_permissions) {
-      const targetUserIds = updateFolderDto.user_permissions.map(up => up.user_id);
-      const currentUserPerms = folder.permissions.filter(p => !!p.user_id && p.user_id !== folder.owner_id);
+      const currentUserPerms = folder.permissions.filter(p => !!p.user_id);
 
-      // Hapus yang tidak ada di target
+      // Delete permissions no longer in the target list (matched by user_id + role_id)
       for (const p of currentUserPerms) {
-        if (!targetUserIds.includes(p.user_id!)) {
+        const inTarget = updateFolderDto.user_permissions.some(
+          up => up.user_id === p.user_id && (up.role_id ?? null) === p.role_id,
+        );
+        if (!inTarget) {
           await this.permissionRepository.delete(p.id);
         }
       }
 
-      // Tambah / Update yang ada
+      // Add / Update
       for (const up of updateFolderDto.user_permissions) {
-        if (up.user_id === folder.owner_id) continue;
-        const existing = currentUserPerms.find(p => p.user_id === up.user_id);
+        const upRoleId: string | null = up.role_id ?? null;
+        // Skip redundant self-permissions only when role context matches the owner's
+        // workspace role or is unscoped — the owner already has full access there.
+        // Cross-role explicit grants (different role_id) must be saved.
+        if (up.user_id === folder.owner_id && (upRoleId === null || upRoleId === folder.role_id)) continue;
+        const existing = currentUserPerms.find(
+          p => p.user_id === up.user_id && p.role_id === upRoleId,
+        );
         if (existing) {
           await this.permissionRepository.update(existing.id, {
             can_read: !!up.can_read,
@@ -532,6 +615,7 @@ export class FoldersService {
           await this.permissionRepository.save({
             folder_id: folder.id,
             user_id: up.user_id,
+            role_id: upRoleId,
             can_read: !!up.can_read,
             can_download: !!up.can_download,
             can_create: !!up.can_create,
@@ -573,16 +657,16 @@ export class FoldersService {
   }
 
   public async getAccessibleFolderIds(user: User): Promise<string[]> {
+    const activeRoleId = (user as any).active_role_id || user.role_id;
     const now = new Date();
 
-    // Get folder IDs where user has ANY permission (read, create, update, delete)
     const permissions = await this.permissionRepository
       .createQueryBuilder('fp')
       .select('fp.folder_id', 'folder_id')
       .where('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere(
         '(fp.user_id = :userId OR fp.role_id = :roleId)',
-        { userId: user.id, roleId: user.role_id },
+        { userId: user.id, roleId: activeRoleId },
       )
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
       .getRawMany();

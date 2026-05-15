@@ -53,9 +53,11 @@ export class FolderPermissionGuard implements CanActivate {
       throw new ForbiddenException('Folder ID is required');
     }
 
+    const activeRoleId = (request.user as any)?.active_role_id || user.role_id;
+
     const hasPermission = await this.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       folderId,
       requiredPermission,
     );
@@ -86,13 +88,18 @@ export class FolderPermissionGuard implements CanActivate {
       return false;
     }
 
-    // owner selalu boleh
+    // The folder owner may always manage their own folder regardless of which role
+    // they are currently operating under. This only covers the owner themselves.
     if (folder.owner?.id === userId) {
       return true;
     }
 
-    // role sama dengan owner (WD2 → folder WD2)
-    if (folder.owner?.role_id === roleId) {
+    // Allow access if the requester's active role matches the folder's workspace role
+    // (folder.role_id is the role under which the folder was created).
+    // We intentionally do NOT check folder.owner?.role_id here — that is the owner's
+    // primary role which may be stale for multi-role users and would grant unintended
+    // access to any user whose role matches the owner's primary role.
+    if (folder.role_id && folder.role_id === roleId) {
       return true;
     }
 

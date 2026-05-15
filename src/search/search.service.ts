@@ -53,7 +53,10 @@ export class SearchService {
     });
 
     // Compute Access & Request Status
-    const isAdmin = ['admin', 'super admin', 'superadmin'].includes(user.role?.name?.toLowerCase() || '');
+    // Use active_role_name from JWT (reflects the role the user switched to) rather than
+    // user.role?.name which is the primary role and never changes during a session.
+    const activeRoleName = ((user as any).active_role_name ?? user.role?.name ?? '').toLowerCase();
+    const isAdmin = ['admin', 'super admin', 'superadmin'].includes(activeRoleName);
     let accessibleFolderIds: string[] = [];
     if (!isAdmin) {
       accessibleFolderIds = await this.foldersService.getAccessibleFolderIds(user);

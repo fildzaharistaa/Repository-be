@@ -153,34 +153,57 @@ export class StatsController {
       relations: ['role']
     });
 
-    // Ensure roleId is always a string UUID, never a Role object
-    const roleId = user?.role_id || user?.role?.id || req.user.role_id || null;
+    // Use active_role_id from JWT (set by /users/switch-role), not primary role from DB.
+    // Same pattern used in folders.service.ts:331, files.service.ts:90, users.controller.ts:62.
+    const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id ?? null;
 
-    console.log('[getUserStats] userId:', userId, 'roleId:', roleId, 'roleName:', user?.role?.name);
+    // Build accessible folder IDs as the union of:
+    //   1. Workspace folders  — owned by this role (folder.role_id = activeRoleId)
+    //   2. Role-based shared  — explicit FolderPermission grants to the whole role group
+    //   3. User-specific shared — personal FolderPermission grants scoped to this role (or role-agnostic)
+    // This mirrors the two-source model used in getSharedTree() in folders.service.ts, ensuring
+    // that dashboard counters, storage, and recent files reflect all resources accessible to the
+    // active role — not just folders the role owns. Cross-role contamination is prevented because
+    // shared entries require an explicit FolderPermission record with the correct role_id.
+    let accessibleFolderIds: string[] = [];
 
-    const now = new Date();
+    if (activeRoleId) {
+      const now = new Date();
 
-    // Get accessible folder IDs (owner or shared via user_id or role_id)
-    const qb = this.permissionRepository
-      .createQueryBuilder('fp')
-      .select('fp.folder_id', 'folder_id')
-      .where('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
-      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now });
+      // 1. Workspace folders owned by this role
+      const workspaceFolders = await this.folderRepository
+        .createQueryBuilder('folder')
+        .select('folder.id', 'id')
+        .where('folder.role_id = :activeRoleId', { activeRoleId })
+        .andWhere('folder.deleted_at IS NULL')
+        .getRawMany();
 
-    if (roleId) {
-      qb.andWhere(
-        '(fp.user_id = :userId OR fp.role_id = :roleId)',
-        { userId, roleId },
-      );
-    } else {
-      qb.andWhere('fp.user_id = :userId', { userId });
+      // 2. Role-based shared folders: grants issued to the entire role group (user_id IS NULL)
+      const roleSharedPerms = await this.permissionRepository
+        .createQueryBuilder('fp')
+        .select('fp.folder_id', 'folder_id')
+        .where('fp.role_id = :activeRoleId', { activeRoleId })
+        .andWhere('fp.user_id IS NULL')
+        .andWhere('fp.can_read = true')
+        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+        .getRawMany();
+
+      // 3. User-specific shared folders: personal grants in this role context or role-agnostic
+      const userSharedPerms = await this.permissionRepository
+        .createQueryBuilder('fp')
+        .select('fp.folder_id', 'folder_id')
+        .where('fp.user_id = :userId', { userId })
+        .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
+        .andWhere('fp.can_read = true')
+        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+        .getRawMany();
+
+      accessibleFolderIds = Array.from(new Set([
+        ...workspaceFolders.map((f) => f.id),
+        ...roleSharedPerms.map((p) => p.folder_id),
+        ...userSharedPerms.map((p) => p.folder_id),
+      ]));
     }
-
-    const permissions = await qb.getRawMany();
-
-    console.log('[getUserStats] permissions found:', permissions.length, 'folderIds:', permissions.map(p => p.folder_id));
-
-    const accessibleFolderIds = Array.from(new Set(permissions.map((p) => p.folder_id)));
 
     let totalFolders = 0;
     let totalFiles = 0;
@@ -234,9 +257,15 @@ export class StatsController {
     const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
     const globalMaxFolderDepth = maxDepthSetting ? parseInt(maxDepthSetting.value, 10) : 5;
     
-    const maxFolderDepth = user?.max_folder_depth != null 
-      ? user.max_folder_depth 
-      : (user?.role?.max_folder_depth != null ? user.role.max_folder_depth : globalMaxFolderDepth);
+    // Load active role entity to get its max_folder_depth.
+    // user.role is always the primary role and does not reflect role switches.
+    const activeRole = activeRoleId
+      ? await this.roleRepository.findOne({ where: { id: activeRoleId } })
+      : null;
+
+    const maxFolderDepth = user?.max_folder_depth != null
+      ? user.max_folder_depth
+      : (activeRole?.max_folder_depth != null ? activeRole.max_folder_depth : globalMaxFolderDepth);
 
     return {
       totalFolders,

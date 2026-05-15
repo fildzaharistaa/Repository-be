@@ -21,11 +21,24 @@ export class FilesService {
   ) { }
 
   private async verifyOwnershipIfRestricted(file: File, user: User): Promise<void> {
-    const fullUser = await this.fileRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
-    const roleName = fullUser?.role?.name?.toLowerCase() || '';
+    // Use the active role name from JWT (set at login/switch-role) rather than the
+    // primary role from the DB. For multi-role users, user.role reflects the account's
+    // original role, not the role they are currently operating under.
+    const activeRoleName = ((user as any).active_role_name ?? '').toLowerCase();
+    let roleName = activeRoleName;
+    if (!roleName) {
+      const fullUser = await this.fileRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
+      roleName = fullUser?.role?.name?.toLowerCase() || '';
+    }
     const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
-    
+
     if (isDosenOrTendik && file.owner_id !== user.id) {
+      // Bypass isolation when accessing a shared folder (folder not owned by this user)
+      const folder = await this.folderRepository.findOne({ where: { id: file.folder_id } });
+      if (folder && folder.owner_id !== user.id) {
+        return; // Shared folder context — all files are visible to users with folder access
+      }
+
       // Check if there is an approved share for this specific file
       const fileShare = await this.fileRepository.manager.findOne(AccessRequest, {
         where: {
@@ -72,10 +85,14 @@ export class FilesService {
       throw new NotFoundException('Folder not found');
     }
 
+    // Use the role the user is currently operating under (active_role_id from JWT),
+    // not their primary role_id which never changes during a session switch.
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
     // Check permission
     const hasPermission = await this.foldersService.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       folderId,
       'create',
     );
@@ -105,6 +122,10 @@ export class FilesService {
       folder_id: folderId,
       owner_id: user.id,
       owner: user,
+      // Snapshot the active role at upload time, not the user's primary DB role.
+      // user.role_id is set at account creation and never updated by switch-role.
+      // active_role_id (from JWT) reflects what role the user is currently using.
+      uploaded_by_role_id: activeRoleId,
     });
 
     return this.fileRepository.save(fileEntity);
@@ -119,10 +140,12 @@ export class FilesService {
       throw new NotFoundException('Folder not found');
     }
 
-    // Check permission
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
+    // Check permission using the role the user is currently operating under.
     const hasPermission = await this.foldersService.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       folderId,
       'read',
     );
@@ -133,20 +156,36 @@ export class FilesService {
       );
     }
 
-    const fullUser = await this.fileRepository.manager.getRepository(User).findOne({ where: { id: user.id }, relations: ['role'] });
-    const roleName = fullUser?.role?.name?.toLowerCase() || '';
-    const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
+    // Determine isolation based on the ACTIVE role name from the JWT (payload.role),
+    // not the primary role stored in users.role_id which never changes on switch-role.
+    const activeRoleName = ((user as any).active_role_name ?? '').toLowerCase();
+    const isDosenOrTendik = activeRoleName.includes('dosen') || activeRoleName.includes('tendik');
 
     const whereCondition: any = { folder_id: folderId };
-    if (isDosenOrTendik) {
+    // Apply ownership isolation only in the user's own folder.
+    // Shared folders (owned by someone else) show all files to anyone with folder access.
+    const isOwnFolder = folder.owner_id === user.id;
+    if (isDosenOrTendik && isOwnFolder) {
       whereCondition.owner_id = user.id;
     }
 
-    return this.fileRepository.find({
+    const files = await this.fileRepository.find({
       where: whereCondition,
-      relations: ['owner', 'owner.role'],
+      relations: ['owner', 'owner.role', 'uploaded_by_role'],
       order: { created_at: 'DESC' },
     });
+
+    return files.map(f => ({
+      ...f,
+      uploaded_by: f.owner?.name ?? null,
+      // Use the stored role snapshot (uploaded_by_role_id → uploaded_by_role relation).
+      // Do NOT fall back to owner.role.name — that is the uploader's CURRENT primary role
+      // which is wrong for multi-role users who uploaded under a different active role.
+      uploaded_by_role: (f as any).uploaded_by_role?.name ?? null,
+      owner_name: f.owner?.name ?? null,
+      owner_email: (f.owner as any)?.email ?? null,
+      owner_role: (f as any).uploaded_by_role?.name ?? f.owner?.role?.name ?? null,
+    }));
   }
 
   async findOne(id: string, user: User): Promise<File> {
@@ -159,10 +198,12 @@ export class FilesService {
       throw new NotFoundException('File not found');
     }
 
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
     // Check permission on parent folder
     const hasPermission = await this.foldersService.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       file.folder_id,
       'read',
     );
@@ -188,10 +229,12 @@ export class FilesService {
       throw new NotFoundException('File not found');
     }
 
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
     // Check read permission on parent folder (view-only is enough for preview)
     let hasPermission = await this.foldersService.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       file.folder_id,
       'read',
     );
@@ -235,9 +278,11 @@ export class FilesService {
       throw new NotFoundException('File not found');
     }
 
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
     let hasPermission = await this.foldersService.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       file.folder_id,
       'download',
     );
@@ -281,10 +326,12 @@ export class FilesService {
       throw new NotFoundException('File not found');
     }
 
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
     // Check update permission on parent folder
     const hasPermission = await this.foldersService.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       file.folder_id,
       'update',
     );
@@ -311,10 +358,12 @@ export class FilesService {
       throw new NotFoundException('File not found');
     }
 
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
     // Check permission
     let hasPermission = await this.foldersService.checkPermission(
       user.id,
-      user.role_id,
+      activeRoleId,
       file.folder_id,
       'delete',
     );

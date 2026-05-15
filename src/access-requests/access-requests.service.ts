@@ -396,7 +396,7 @@ export class AccessRequestsService {
         status: 'approved',
         can_read: true,
       },
-      relations: ['file', 'file.folder', 'owner', 'owner.role'],
+      relations: ['file', 'file.folder', 'file.uploaded_by_role', 'owner', 'owner.role'],
     });
 
     // 2. Files shared BY the user
@@ -405,7 +405,7 @@ export class AccessRequestsService {
         owner: { id: userId },
         status: 'approved',
       },
-      relations: ['file', 'file.folder'],
+      relations: ['file', 'file.folder', 'file.uploaded_by_role'],
     });
 
     // 3. Files uploaded by OTHERS in MY folders
@@ -413,6 +413,7 @@ export class AccessRequestsService {
       .innerJoinAndSelect('file.folder', 'folder')
       .leftJoinAndSelect('file.owner', 'owner')
       .leftJoinAndSelect('owner.role', 'role')
+      .leftJoinAndSelect('file.uploaded_by_role', 'uploadedByRole')
       .where('folder.owner_id = :userId', { userId })
       .andWhere('file.owner_id != :userId', { userId })
       .andWhere('file.deleted_at IS NULL')
@@ -427,6 +428,7 @@ export class AccessRequestsService {
       if (!r.file) continue;
       const file = r.file;
       if (!resultFiles.has(file.id)) {
+        const uploadedByRole = (file as any).uploaded_by_role?.name ?? r.owner?.role?.name ?? null;
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
@@ -437,7 +439,9 @@ export class AccessRequestsService {
           owner_id: r.owner?.id,
           owner_name: r.owner?.name || 'Unknown',
           owner_email: r.owner?.email || '(email tidak tersedia)',
-          owner_role: r.owner?.role?.name || 'Unknown',
+          owner_role: uploadedByRole,
+          uploaded_by: r.owner?.name || 'Unknown',
+          uploaded_by_role: uploadedByRole,
           can_read: r.can_read,
           can_download: r.can_download,
           can_create: r.can_create,
@@ -452,6 +456,7 @@ export class AccessRequestsService {
       if (!r.file) continue;
       const file = r.file;
       if (!resultFiles.has(file.id)) {
+        const myUploadedByRole = (file as any).uploaded_by_role?.name ?? me?.role?.name ?? null;
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
@@ -462,7 +467,9 @@ export class AccessRequestsService {
           owner_id: userId,
           owner_name: me?.name || 'Anda',
           owner_email: me?.email || '(email tidak tersedia)',
-          owner_role: me?.role?.name || 'Unknown',
+          owner_role: myUploadedByRole,
+          uploaded_by: me?.name || 'Anda',
+          uploaded_by_role: myUploadedByRole,
           can_read: true,
           can_download: true,
           can_create: true,
@@ -475,6 +482,7 @@ export class AccessRequestsService {
     // Process othersFilesInMyFolders
     for (const file of othersFilesInMyFolders) {
       if (!resultFiles.has(file.id)) {
+        const uploadedByRole = (file as any).uploaded_by_role?.name ?? file.owner?.role?.name ?? null;
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
@@ -485,7 +493,9 @@ export class AccessRequestsService {
           owner_id: file.owner_id,
           owner_name: file.owner?.name || 'Unknown',
           owner_email: file.owner?.email || '(email tidak tersedia)',
-          owner_role: file.owner?.role?.name || 'Unknown',
+          owner_role: uploadedByRole,
+          uploaded_by: file.owner?.name || 'Unknown',
+          uploaded_by_role: uploadedByRole,
           can_read: true,
           can_download: true,
           can_create: true,
@@ -497,9 +507,6 @@ export class AccessRequestsService {
 
     // Convert map to array and sort by created_at descending
     const filesArray = Array.from(resultFiles.values());
-    if (filesArray.length > 0) {
-      console.log('DEBUG: First shared file owner_email:', filesArray[0].owner_email);
-    }
     filesArray.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     
     return filesArray;

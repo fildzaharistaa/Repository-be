@@ -17,5 +17,10 @@ export class CreateFolderDto {
   @IsArray()
   @IsOptional()
   user_permissions?: any[];
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  initial_subfolders?: string[];
 }
 
