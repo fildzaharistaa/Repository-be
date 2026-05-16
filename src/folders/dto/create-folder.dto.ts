@@ -1,4 +1,4 @@
-import { IsString, IsUUID, IsOptional, MinLength, IsArray } from 'class-validator';
+import { IsString, IsUUID, IsOptional, MinLength, IsArray, IsBoolean } from 'class-validator';
 
 export class CreateFolderDto {
   @IsString()
@@ -22,5 +22,9 @@ export class CreateFolderDto {
   @IsString({ each: true })
   @IsOptional()
   initial_subfolders?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  is_shared_subfolder?: boolean;
 }
 

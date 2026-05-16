@@ -42,6 +42,9 @@ export class Role {
   @Column({ type: 'boolean', default: false })
   is_system: boolean;
 
+  @Column({ type: 'boolean', default: false })
+  is_private: boolean;
+
   @Column({ type: 'int', default: 0 })
   hierarchy_level: number;
 

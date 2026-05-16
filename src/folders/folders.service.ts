@@ -143,9 +143,29 @@ export class FoldersService {
       relations: ['role'],
     });
 
+    // Subfolders inherit the parent folder's role_id to stay in the same workspace.
+    // Exception: private roles (e.g. Dosen/Tendik) keep their own activeRoleId so that
+    // each user's subfolders stay isolated — unless is_shared_subfolder=true, which
+    // means the user explicitly chose to share it with everyone who has access to the parent.
+    let folderRoleId = activeRoleId || null;
+    if (createFolderDto.parent_id) {
+      const activeRole = activeRoleId
+        ? await this.roleRepository.findOne({ where: { id: activeRoleId } })
+        : null;
+      const shouldInherit = !activeRole?.is_private || createFolderDto.is_shared_subfolder;
+      if (shouldInherit) {
+        const parent = await this.folderRepository.findOne({
+          where: { id: createFolderDto.parent_id },
+        });
+        if (parent?.role_id) {
+          folderRoleId = parent.role_id;
+        }
+      }
+    }
+
     const folder = this.folderRepository.create({
       ...createFolderDto,
-      role_id: activeRoleId || null,
+      role_id: folderRoleId,
       owner: { id: userId } as User,
       unit: user?.role?.name?.toLowerCase().substring(0, 50) || 'general',
     });
@@ -314,15 +334,30 @@ export class FoldersService {
    * a subfolder - the getFiles endpoint checks permissions and returns
    * 403 "Akses Ditolak" if the user lacks access.
    */
-  async findOneForUser(id: string, _user: User): Promise<Folder> {
+  async findOneForUser(id: string, user: User): Promise<Folder> {
     const folder = await this.folderRepository.findOne({
       where: { id },
-      relations: ['parent', 'children', 'permissions', 'permissions.role', 'permissions.user', 'owner'],
+      relations: ['parent', 'permissions', 'permissions.role', 'permissions.user', 'owner'],
     });
 
     if (!folder) {
       throw new NotFoundException('Folder not found');
     }
+
+    // Load children separately with owner+role so we can apply privacy filtering.
+    // Rule: hide a child if its OWNER's role is_private=true AND owner is not the current user.
+    // This correctly handles both old data (role_id inherited) and new data (role_id kept private).
+    const allChildren = await this.folderRepository.find({
+      where: { parent_id: id, deleted_at: IsNull() },
+      relations: { owner: { role: true } },
+      order: { name: 'ASC' },
+    });
+
+    folder.children = allChildren.filter((child) => {
+      if (child.owner_id === user.id) return true;
+      const ownerRoleIsPrivate = (child.owner as any)?.role?.is_private === true;
+      return !ownerRoleIsPrivate;
+    });
 
     return folder;
   }
@@ -331,8 +366,15 @@ export class FoldersService {
     const activeRoleId = (user as any).active_role_id || user.role_id;
     if (!activeRoleId) return [];
 
+    const role = await this.roleRepository.findOne({ where: { id: activeRoleId } });
+    const isPrivate = role?.is_private === true;
+
+    const where = isPrivate
+      ? { role_id: activeRoleId, owner_id: user.id, deleted_at: IsNull() }
+      : { role_id: activeRoleId, deleted_at: IsNull() };
+
     return this.folderRepository.find({
-      where: { role_id: activeRoleId, deleted_at: IsNull() },
+      where,
       relations: ['parent', 'owner', 'owner.role'],
       order: { name: 'ASC' },
     });
@@ -389,11 +431,44 @@ export class FoldersService {
     const activeRoleId = (user as any).active_role_id || user.role_id;
     if (!activeRoleId) return [];
 
-    // Role workspace: only folders that belong to the active role
+    const role = await this.roleRepository.findOne({ where: { id: activeRoleId } });
+    const isPrivate = role?.is_private === true;
+
+    const where = isPrivate
+      ? { role_id: activeRoleId, owner_id: user.id, deleted_at: IsNull() }
+      : { role_id: activeRoleId, deleted_at: IsNull() };
+
     const folders = await this.folderRepository.find({
-      where: { role_id: activeRoleId, deleted_at: IsNull() },
+      where,
       order: { name: 'ASC' },
     });
+
+    // For private roles: some folders may be private subfolders of shared folders.
+    // Their parent is outside this workspace so they appear as root nodes, but we
+    // want to show the user which shared folder they belong to.
+    if (isPrivate && folders.length > 0) {
+      const folderIds = new Set(folders.map((f) => f.id));
+      const orphanParentIds = [
+        ...new Set(
+          folders
+            .filter((f) => f.parent_id && !folderIds.has(f.parent_id))
+            .map((f) => f.parent_id!),
+        ),
+      ];
+
+      if (orphanParentIds.length > 0) {
+        const parents = await this.folderRepository.find({
+          where: { id: In(orphanParentIds) },
+          select: ['id', 'name'],
+        });
+        const parentMap = new Map(parents.map((p) => [p.id, p.name]));
+        for (const folder of folders) {
+          if (folder.parent_id && !folderIds.has(folder.parent_id)) {
+            (folder as any).shared_parent_name = parentMap.get(folder.parent_id) ?? null;
+          }
+        }
+      }
+    }
 
     return this.buildTree(folders);
   }
@@ -466,8 +541,9 @@ export class FoldersService {
         parent_id: folder.parent_id,
         created_at: folder.created_at,
         updated_at: folder.updated_at,
+        shared_parent_name: (folder as any).shared_parent_name ?? null,
         children: [],
-      });
+      } as any);
     });
 
     folders.forEach((folder) => {

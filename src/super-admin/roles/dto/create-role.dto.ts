@@ -44,4 +44,8 @@ export class CreateRoleDto {
   @IsOptional()
   @Min(0)
   max_folder_depth?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  is_private?: boolean;
 }

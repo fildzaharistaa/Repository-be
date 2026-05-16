@@ -38,6 +38,7 @@ export class AdminRolesService {
       category: dto.category ?? null,
       color: dto.color ?? null,
       max_folder_depth: dto.max_folder_depth ?? null,
+      is_private: dto.is_private ?? false,
       created_by: actorId ?? null,
       updated_by: actorId ?? null,
     });
@@ -84,6 +85,7 @@ export class AdminRolesService {
     if (dto.category !== undefined) role.category = dto.category;
     if (dto.color !== undefined) role.color = dto.color;
     if (dto.max_folder_depth !== undefined) role.max_folder_depth = dto.max_folder_depth;
+    if (dto.is_private !== undefined) role.is_private = dto.is_private;
     role.updated_by = actorId ?? role.updated_by;
     const saved = await this.roleRepo.save(role);
     this.cache.invalidateAll();

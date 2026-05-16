@@ -84,15 +84,32 @@ export class FoldersController {
           throw new ForbiddenException('Membuat folder root membutuhkan permission folder.create');
         }
       } else {
-        // Subfolder: check folder-level create permission on parent
-        const hasPermission = await this.foldersService.checkPermission(
-          req.user.id,
-          activeRoleId,
-          createFolderDto.parent_id,
-          'create',
-        );
-        if (!hasPermission) {
-          throw new ForbiddenException('You do not have create permission for the parent folder');
+        // Subfolder: check based on which RBAC permission they hold
+        const { slugs } = await this.permCache.getEffective(req.user.id, activeRoleId);
+        const hasSubfolderPerm = this.permCache.hasSlug(slugs, 'folder.create_subfolder');
+
+        if (hasSubfolderPerm) {
+          // folder.create_subfolder holders only need READ access to the parent
+          const canRead = await this.foldersService.checkPermission(
+            req.user.id,
+            activeRoleId,
+            createFolderDto.parent_id,
+            'read',
+          );
+          if (!canRead) {
+            throw new ForbiddenException('Anda tidak memiliki akses ke folder ini');
+          }
+        } else {
+          // folder.create holders need explicit CREATE access on the parent
+          const canCreate = await this.foldersService.checkPermission(
+            req.user.id,
+            activeRoleId,
+            createFolderDto.parent_id,
+            'create',
+          );
+          if (!canCreate) {
+            throw new ForbiddenException('You do not have create permission for the parent folder');
+          }
         }
       }
     }
