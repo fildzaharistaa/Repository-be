@@ -112,7 +112,10 @@ export class FolderPermissionGuard implements CanActivate {
       .getMany();
 
     if (permissions.length === 0) {
-      return false;
+      // No direct permission: check if any ancestor folder grants access.
+      // This handles subfolders of shared folders that may not have their own
+      // permission records (e.g. legacy data before recursive propagation was added).
+      return this.checkAncestorPermissions(folder, userId, roleId, permissionType, now);
     }
 
     // OR logic: if ANY matching permission grants the requested type, allow
@@ -132,6 +135,43 @@ export class FolderPermissionGuard implements CanActivate {
 
         default:
           return false;
+      }
+    });
+  }
+
+  private async checkAncestorPermissions(
+    folder: Folder,
+    userId: string,
+    roleId: string,
+    permissionType: PermissionType,
+    now: Date,
+  ): Promise<boolean> {
+    const ancestorIds: string[] = [];
+    let parentId = folder.parent_id;
+    while (parentId && ancestorIds.length < 5) {
+      ancestorIds.push(parentId);
+      const parent = await this.folderRepository.findOne({
+        where: { id: parentId },
+        select: ['id', 'parent_id'],
+      });
+      parentId = parent?.parent_id ?? null;
+    }
+    if (!ancestorIds.length) return false;
+
+    const perms = await this.permissionRepository
+      .createQueryBuilder('fp')
+      .where('fp.folder_id IN (:...folderIds)', { folderIds: ancestorIds })
+      .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .getMany();
+
+    return perms.some(p => {
+      switch (permissionType) {
+        case PermissionType.READ: return p.can_read;
+        case PermissionType.CREATE: return p.can_create;
+        case PermissionType.UPDATE: return p.can_update;
+        case PermissionType.DELETE: return p.can_delete;
+        default: return false;
       }
     });
   }

@@ -1,10 +1,19 @@
-import { Controller, Get, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Param, UseGuards, Request } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, In } from 'typeorm';
 import { Role, User, Folder, File, SystemSetting, FolderPermission } from '../entities';
+
+interface FolderOverviewItem {
+  id: string;
+  name: string;
+  subfolder_count: number;
+  file_count: number;
+  storage_size: number;
+  updated_at: Date;
+}
 
 @Controller('stats')
 @UseGuards(JwtAuthGuard)
@@ -281,5 +290,194 @@ export class StatsController {
         folder_name: f.folder?.name || '-',
       })),
     };
+  }
+
+  // =============================
+  // FOLDER OVERVIEW (PER ROOT FOLDER STATS)
+  // =============================
+  @Get('folder-overview')
+  async getFolderOverview(@Request() req): Promise<FolderOverviewItem[]> {
+    const userId = req.user.id;
+    const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id ?? null;
+
+    const accessibleFolderIds = await this.getAccessibleFolderIds(userId, activeRoleId);
+    if (accessibleFolderIds.length === 0) return [];
+
+    // Fetch all accessible folders (minimal fields)
+    const folders = await this.folderRepository.find({
+      where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
+      select: ['id', 'name', 'parent_id', 'updated_at'],
+    });
+
+    // Identify root folders: parent_id is null OR parent is outside the accessible set
+    const accessibleSet = new Set(accessibleFolderIds);
+    const rootFolders = folders.filter(
+      (f) => !f.parent_id || !accessibleSet.has(f.parent_id),
+    );
+
+    // Build parent → children map for BFS
+    const childrenMap = new Map<string, string[]>();
+    for (const folder of folders) {
+      if (folder.parent_id && accessibleSet.has(folder.parent_id)) {
+        if (!childrenMap.has(folder.parent_id)) childrenMap.set(folder.parent_id, []);
+        childrenMap.get(folder.parent_id)!.push(folder.id);
+      }
+    }
+
+    // BFS: collect all folder IDs under a root (inclusive)
+    const collectDescendants = (rootId: string): string[] => {
+      const result: string[] = [rootId];
+      const queue = [rootId];
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        const children = childrenMap.get(current) ?? [];
+        result.push(...children);
+        queue.push(...children);
+      }
+      return result;
+    };
+
+    // For each root folder, count files + storage across all descendants
+    const results = await Promise.all(
+      rootFolders.map(async (root) => {
+        const allIds = collectDescendants(root.id);
+        const subfolderCount = allIds.length - 1;
+
+        const fileStats = await this.fileRepository
+          .createQueryBuilder('file')
+          .select('COUNT(*)', 'count')
+          .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
+          .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
+          .andWhere('file.deleted_at IS NULL')
+          .getRawOne();
+
+        return {
+          id: root.id,
+          name: root.name,
+          subfolder_count: subfolderCount,
+          file_count: parseInt(fileStats?.count ?? '0', 10),
+          storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
+          updated_at: root.updated_at,
+        };
+      }),
+    );
+
+    return results;
+  }
+
+  // =============================
+  // FOLDER CHILDREN STATS (LAZY EXPAND)
+  // =============================
+  @Get('folder-children/:folderId')
+  async getFolderChildrenStats(
+    @Param('folderId') folderId: string,
+    @Request() req,
+  ): Promise<FolderOverviewItem[]> {
+    const userId = req.user.id;
+    const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id ?? null;
+
+    const accessibleFolderIds = await this.getAccessibleFolderIds(userId, activeRoleId);
+    if (accessibleFolderIds.length === 0) return [];
+
+    // Verify the requested folder is accessible
+    if (!accessibleFolderIds.includes(folderId)) return [];
+
+    // Fetch all accessible folders for BFS
+    const allAccessibleFolders = await this.folderRepository.find({
+      where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
+      select: ['id', 'name', 'parent_id', 'updated_at'],
+    });
+
+    // Build parent → children map
+    const accessibleSet = new Set(accessibleFolderIds);
+    const childrenMap = new Map<string, typeof allAccessibleFolders>();
+    for (const folder of allAccessibleFolders) {
+      if (folder.parent_id && accessibleSet.has(folder.parent_id)) {
+        if (!childrenMap.has(folder.parent_id)) childrenMap.set(folder.parent_id, []);
+        childrenMap.get(folder.parent_id)!.push(folder);
+      }
+    }
+
+    // BFS: collect all descendant IDs under a node (inclusive)
+    const collectDescendantIds = (nodeId: string): string[] => {
+      const result: string[] = [nodeId];
+      const queue = [nodeId];
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        const children = (childrenMap.get(current) ?? []).map((f) => f.id);
+        result.push(...children);
+        queue.push(...children);
+      }
+      return result;
+    };
+
+    // Direct children of the requested folder
+    const directChildren = childrenMap.get(folderId) ?? [];
+    if (directChildren.length === 0) return [];
+
+    // For each direct child, compute recursive stats
+    const results = await Promise.all(
+      directChildren.map(async (child) => {
+        const allIds = collectDescendantIds(child.id);
+        const subfolderCount = allIds.length - 1;
+
+        const fileStats = await this.fileRepository
+          .createQueryBuilder('file')
+          .select('COUNT(*)', 'count')
+          .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
+          .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
+          .andWhere('file.deleted_at IS NULL')
+          .getRawOne();
+
+        return {
+          id: child.id,
+          name: child.name,
+          subfolder_count: subfolderCount,
+          file_count: parseInt(fileStats?.count ?? '0', 10),
+          storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
+          updated_at: child.updated_at,
+        };
+      }),
+    );
+
+    return results;
+  }
+
+  // Shared helper: returns all folder IDs accessible to the given user + active role
+  private async getAccessibleFolderIds(userId: string, activeRoleId: string | null): Promise<string[]> {
+    if (!activeRoleId) return [];
+
+    const now = new Date();
+
+    const workspaceFolders = await this.folderRepository
+      .createQueryBuilder('folder')
+      .select('folder.id', 'id')
+      .where('folder.role_id = :activeRoleId', { activeRoleId })
+      .andWhere('folder.deleted_at IS NULL')
+      .getRawMany();
+
+    const roleSharedPerms = await this.permissionRepository
+      .createQueryBuilder('fp')
+      .select('fp.folder_id', 'folder_id')
+      .where('fp.role_id = :activeRoleId', { activeRoleId })
+      .andWhere('fp.user_id IS NULL')
+      .andWhere('fp.can_read = true')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .getRawMany();
+
+    const userSharedPerms = await this.permissionRepository
+      .createQueryBuilder('fp')
+      .select('fp.folder_id', 'folder_id')
+      .where('fp.user_id = :userId', { userId })
+      .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
+      .andWhere('fp.can_read = true')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .getRawMany();
+
+    return Array.from(new Set([
+      ...workspaceFolders.map((f) => f.id),
+      ...roleSharedPerms.map((p) => p.folder_id),
+      ...userSharedPerms.map((p) => p.folder_id),
+    ]));
   }
 }
