@@ -48,7 +48,7 @@ export class UsersService {
 
   async findAll(page: number = 1, limit: number = 10) {
     const [users, total] = await this.userRepository.findAndCount({
-      relations: ['role'],
+      relations: ['role', 'userRoles', 'userRoles.role'],
       skip: (page - 1) * limit,
       take: limit,
       order: { created_at: 'DESC' },
