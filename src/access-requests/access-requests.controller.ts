@@ -152,10 +152,12 @@ export class AccessRequestsController {
     @Body('message') message: string,
     @Req() req
   ) {
+    const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id;
     return this.accessRequestsService.requestHierarchyIncrease(
       req.user.id,
       requestedDepth,
-      message
+      message,
+      activeRoleId,
     );
   }
 

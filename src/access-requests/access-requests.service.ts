@@ -668,16 +668,23 @@ export class AccessRequestsService {
     userId: string,
     requestedDepth: number,
     message?: string,
+    activeRoleId?: string,
   ) {
     const requester = await this.userRepo.findOne({
       where: { id: userId },
       relations: ['role'],
     });
     if (!requester) throw new NotFoundException('User not found');
-    
-    const roleName = requester.role?.name?.toLowerCase() || '';
-    if (roleName.includes('dosen') || roleName.includes('tendik')) {
-      throw new ForbiddenException('Role Dosen dan Tendik tidak diizinkan untuk request tambah kedalaman folder');
+
+    // Check restriction based on ACTIVE role's is_private flag, not the hardcoded primary role name.
+    // A user whose primary role is Dosen but is currently acting as Wakil Dekan should be allowed.
+    const roleIdToCheck = activeRoleId || requester.role_id;
+    const activeRole = roleIdToCheck
+      ? await this.roleRepository.findOne({ where: { id: roleIdToCheck } })
+      : requester.role;
+
+    if (activeRole?.is_private) {
+      throw new ForbiddenException('Role ini tidak diizinkan untuk request tambah kedalaman folder');
     }
 
     // Find any admin user to be the "owner" of this request
