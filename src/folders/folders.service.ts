@@ -349,13 +349,6 @@ export class FoldersService {
     return folder;
   }
 
-  /**
-   * Get a single folder with its details for a specific user.
-   * All children are shown (so user can see subfolders exist), but
-   * access control is enforced when the user tries to navigate into
-   * a subfolder - the getFiles endpoint checks permissions and returns
-   * 403 "Akses Ditolak" if the user lacks access.
-   */
   async findOneForUser(id: string, user: User): Promise<Folder> {
     const folder = await this.folderRepository.findOne({
       where: { id },
@@ -366,15 +359,26 @@ export class FoldersService {
       throw new NotFoundException('Folder not found');
     }
 
-    // Load children separately with owner+role so we can apply privacy filtering.
-    // Rule: hide a child if its OWNER's role is_private=true AND owner is not the current user.
-    // This correctly handles both old data (role_id inherited) and new data (role_id kept private).
     const allChildren = await this.folderRepository.find({
       where: { parent_id: id, deleted_at: IsNull() },
       relations: { owner: { role: true } },
       order: { name: 'ASC' },
     });
 
+    // If the user has direct or inherited shared access to this folder,
+    // show ALL children — access is recursive/inherited down the tree.
+    const isOwner = folder.owner_id === user.id;
+    if (!isOwner) {
+      const activeRoleId = (user as any).active_role_id || user.role_id;
+      const hasSharedAccess = await this.checkPermission(user.id, activeRoleId, id, 'read');
+      if (hasSharedAccess) {
+        folder.children = allChildren;
+        return folder;
+      }
+    }
+
+    // Owner or workspace-scoped access: apply privacy filter so that private-role
+    // subfolders created by other users remain isolated.
     folder.children = allChildren.filter((child) => {
       if (child.owner_id === user.id) return true;
       const ownerRoleIsPrivate = (child.owner as any)?.role?.is_private === true;
@@ -874,7 +878,46 @@ export class FoldersService {
       .getMany();
 
     if (permissions.length === 0) {
-      return false;
+      // No direct permission — check if user owns the folder or inherits access
+      // from an ancestor folder that was explicitly shared with them.
+      const folder = await this.folderRepository.findOne({
+        where: { id: folderId },
+        select: ['id', 'owner_id', 'parent_id'],
+      });
+      if (!folder) return false;
+      if (folder.owner_id === userId) return true;
+
+      const ancestorIds: string[] = [];
+      let parentId = folder.parent_id;
+      while (parentId && ancestorIds.length < 10) {
+        const parent = await this.folderRepository.findOne({
+          where: { id: parentId },
+          select: ['id', 'owner_id', 'parent_id'],
+        });
+        if (!parent) break;
+        if (parent.owner_id === userId) return true;
+        ancestorIds.push(parent.id);
+        parentId = parent.parent_id ?? null;
+      }
+      if (!ancestorIds.length) return false;
+
+      const ancestorPerms = await this.permissionRepository
+        .createQueryBuilder('fp')
+        .where('fp.folder_id IN (:...folderIds)', { folderIds: ancestorIds })
+        .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
+        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+        .getMany();
+
+      return ancestorPerms.some(permission => {
+        switch (permissionType) {
+          case 'read': return permission.can_read;
+          case 'create': return permission.can_create;
+          case 'update': return permission.can_update;
+          case 'delete': return permission.can_delete;
+          case 'download': return permission.can_download;
+          default: return false;
+        }
+      });
     }
 
     // OR logic: if ANY permission record grants the requested type, allow it
