@@ -13,6 +13,10 @@ interface FolderOverviewItem {
   file_count: number;
   storage_size: number;
   updated_at: Date;
+  owner_name: string | null;
+  owner_email: string | null;
+  owner_role: string | null;
+  is_shared: boolean;
 }
 
 @Controller('stats')
@@ -303,10 +307,10 @@ export class StatsController {
     const accessibleFolderIds = await this.getAccessibleFolderIds(userId, activeRoleId);
     if (accessibleFolderIds.length === 0) return [];
 
-    // Fetch all accessible folders (minimal fields)
+    // Fetch all accessible folders with owner + workspace role info for shared badge
     const folders = await this.folderRepository.find({
       where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
-      select: ['id', 'name', 'parent_id', 'updated_at'],
+      relations: ['owner', 'role'],
     });
 
     // Identify root folders: parent_id is null OR parent is outside the accessible set
@@ -358,6 +362,10 @@ export class StatsController {
           file_count: parseInt(fileStats?.count ?? '0', 10),
           storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
           updated_at: root.updated_at,
+          owner_name: root.owner?.name ?? null,
+          owner_email: root.owner?.email ?? null,
+          owner_role: root.role?.name ?? null,
+          is_shared: root.role_id !== activeRoleId,
         };
       }),
     );
@@ -436,6 +444,10 @@ export class StatsController {
           file_count: parseInt(fileStats?.count ?? '0', 10),
           storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
           updated_at: child.updated_at,
+          owner_name: null,
+          owner_email: null,
+          owner_role: null,
+          is_shared: false,
         };
       }),
     );
