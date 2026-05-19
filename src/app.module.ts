@@ -22,6 +22,7 @@ import { RecycleBinModule } from './recycle-bin/recycle-bin.module';
 import { SettingsModule } from './settings/settings.module';
 import { CronModule } from './cron/cron.module';
 import { SuperAdminModule } from './super-admin/super-admin.module';
+import { IntegrationModule } from './integration/integration.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { SuperAdminModule } from './super-admin/super-admin.module';
     SettingsModule,
     CronModule,
     SuperAdminModule,
+    IntegrationModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
