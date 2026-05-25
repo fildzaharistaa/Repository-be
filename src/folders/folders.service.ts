@@ -163,11 +163,20 @@ export class FoldersService {
       }
     }
 
+    // Derive unit from the resolved folder role (active role context), not user's primary role
+    let folderUnit = 'general';
+    if (folderRoleId) {
+      const folderRole = await this.roleRepository.findOne({ where: { id: folderRoleId } });
+      folderUnit = folderRole?.name?.toLowerCase().substring(0, 50) || 'general';
+    } else if (user?.role?.name) {
+      folderUnit = user.role.name.toLowerCase().substring(0, 50);
+    }
+
     const folder = this.folderRepository.create({
       ...createFolderDto,
       role_id: folderRoleId,
       owner: { id: userId } as User,
-      unit: user?.role?.name?.toLowerCase().substring(0, 50) || 'general',
+      unit: folderUnit,
     });
 
     const savedFolder = await this.folderRepository.save(folder);
@@ -576,7 +585,10 @@ export class FoldersService {
     //    sharer (owner_id ≠ current user) and have a different role_id than activeRoleId.
     const sharedFolders = folders.filter((f) => {
       if (userSharedIds.has(f.id)) return true;
-      if (f.owner_id === user.id) return false;
+      // Hanya exclude folder milik user jika folder itu ada di workspace role aktif saat ini
+      // (sudah terlihat di "My Folders"). Folder dari workspace lain (beda role) tetap tampil
+      // jika ada role-permission untuk role aktif.
+      if (f.owner_id === user.id && f.role_id === activeRoleId) return false;
       return f.role_id !== activeRoleId;
     });
 

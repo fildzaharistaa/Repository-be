@@ -54,13 +54,15 @@ export class StatsController {
       where: { deleted_at: IsNull() },
     });
 
-    // Folders per unit
+    // Folders per unit — join roles via role_id (source of truth for active role at creation)
     const foldersPerUnit = await this.folderRepository
       .createQueryBuilder('folder')
-      .select('folder.unit', 'unit')
+      .innerJoin('roles', 'role', 'role.id = folder.role_id')
+      .select('role.name', 'unit')
       .addSelect('COUNT(*)', 'count')
       .where('folder.deleted_at IS NULL')
-      .groupBy('folder.unit')
+      .andWhere('folder.role_id IS NOT NULL')
+      .groupBy('role.name')
       .getRawMany();
 
     // Users per role — count ALL active role assignments from user_roles (includes multi-role users)
