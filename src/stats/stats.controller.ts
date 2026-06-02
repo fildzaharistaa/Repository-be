@@ -54,22 +54,28 @@ export class StatsController {
       where: { deleted_at: IsNull() },
     });
 
-    // Folders per unit
+    // Folders per unit — join roles via role_id (source of truth for active role at creation)
     const foldersPerUnit = await this.folderRepository
       .createQueryBuilder('folder')
-      .select('folder.unit', 'unit')
+      .innerJoin('roles', 'role', 'role.id = folder.role_id')
+      .select('role.name', 'unit')
       .addSelect('COUNT(*)', 'count')
       .where('folder.deleted_at IS NULL')
-      .groupBy('folder.unit')
+      .andWhere('folder.role_id IS NOT NULL')
+      .groupBy('role.name')
       .getRawMany();
 
-    // Users per role
-    const usersPerRole = await this.userRepository
-      .createQueryBuilder('user')
-      .leftJoin('user.role', 'role')
-      .select('role.name', 'roleName')
-      .addSelect('COUNT(*)', 'count')
-      .groupBy('role.name')
+    // Users per role — count ALL active role assignments from user_roles (includes multi-role users)
+    const usersPerRole = await this.userRepository.manager
+      .createQueryBuilder()
+      .select('r.name', 'roleName')
+      .addSelect('COUNT(DISTINCT ur.user_id)', 'count')
+      .from('user_roles', 'ur')
+      .innerJoin('roles', 'r', 'r.id = ur.role_id')
+      .where('ur.deleted_at IS NULL')
+      .andWhere("ur.status = 'ACTIVE'")
+      .groupBy('r.name')
+      .orderBy('count', 'DESC')
       .getRawMany();
 
     // Recent activity
@@ -131,8 +137,21 @@ export class StatsController {
       .select('SUM(file.size)', 'totalSize')
       .where('file.deleted_at IS NULL')
       .getRawOne();
-    
+
     const totalSize = parseInt(storageResult?.totalSize || '0');
+
+    // Storage per unit — grouped by role name via folder.role_id for accurate role mapping
+    const storagePerUnit = await this.fileRepository
+      .createQueryBuilder('file')
+      .innerJoin('file.folder', 'folder')
+      .innerJoin('roles', 'role', 'role.id = folder.role_id')
+      .select('role.name', 'unit')
+      .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
+      .where('file.deleted_at IS NULL')
+      .andWhere('folder.deleted_at IS NULL')
+      .andWhere('folder.role_id IS NOT NULL')
+      .groupBy('role.name')
+      .getRawMany();
 
     // Get system settings
     const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
@@ -148,6 +167,7 @@ export class StatsController {
       maxFolderDepth,
       maxStoragePerUser,
       foldersPerUnit,
+      storagePerUnit,
       usersPerRole,
       recentActivity,
     };
