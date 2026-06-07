@@ -5,6 +5,7 @@ import { SystemSetting, User, Role } from '../entities';
 
 const MIN_FOLDER_DEPTH = 5;
 const MAX_STORAGE_PER_USER = 104857600; // 100 MB in bytes
+const DEFAULT_MAX_UPLOAD_SIZE = 5242880; // 5 MB in bytes
 
 @Injectable()
 export class SettingsService {
@@ -24,6 +25,7 @@ export class SettingsService {
     const defaults: { key: string; value: string }[] = [
       { key: 'max_folder_depth', value: String(MIN_FOLDER_DEPTH) },
       { key: 'max_storage_per_user', value: String(MAX_STORAGE_PER_USER) },
+      { key: 'max_upload_size', value: String(DEFAULT_MAX_UPLOAD_SIZE) },
     ];
 
     for (const d of defaults) {
@@ -59,6 +61,15 @@ export class SettingsService {
       }
     }
 
+    if (key === 'max_upload_size') {
+      const numValue = parseInt(value, 10);
+      const MIN_BYTES = 1 * 1024 * 1024;   // 1 MB
+      const MAX_BYTES = 500 * 1024 * 1024; // 500 MB
+      if (isNaN(numValue) || numValue < MIN_BYTES || numValue > MAX_BYTES) {
+        throw new BadRequestException('Max upload size harus antara 1 MB dan 500 MB');
+      }
+    }
+
     let setting = await this.settingRepo.findOne({ where: { key } });
     if (!setting) {
       setting = this.settingRepo.create({ key, value });
@@ -84,5 +95,10 @@ export class SettingsService {
   async getMaxStoragePerUser(): Promise<number> {
     const val = await this.get('max_storage_per_user');
     return val ? parseInt(val, 10) : MAX_STORAGE_PER_USER;
+  }
+
+  async getMaxUploadSize(): Promise<number> {
+    const val = await this.get('max_upload_size');
+    return val ? parseInt(val, 10) : DEFAULT_MAX_UPLOAD_SIZE;
   }
 }
