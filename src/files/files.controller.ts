@@ -22,6 +22,8 @@ import { FilesService } from './files.service';
 import { SettingsService } from '../settings/settings.service';
 import { UpdateFileDto } from './update-file.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import type { RequestWithUser } from '../common/interfaces/request-with-user.interface';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
@@ -127,6 +129,8 @@ export class FilesController {
     stream.pipe(res);
   }
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('file.download')
   @Get(':id/download')
   async download(
     @Param('id') id: string,
