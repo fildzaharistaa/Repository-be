@@ -147,11 +147,12 @@ export class FoldersService {
     // Exception: private roles (e.g. Dosen/Tendik) keep their own activeRoleId so that
     // each user's subfolders stay isolated — unless is_shared_subfolder=true, which
     // means the user explicitly chose to share it with everyone who has access to the parent.
+    const activeRole = activeRoleId
+      ? await this.roleRepository.findOne({ where: { id: activeRoleId } })
+      : null;
+
     let folderRoleId = activeRoleId || null;
     if (createFolderDto.parent_id) {
-      const activeRole = activeRoleId
-        ? await this.roleRepository.findOne({ where: { id: activeRoleId } })
-        : null;
       const shouldInherit = !activeRole?.is_private || createFolderDto.is_shared_subfolder;
       if (shouldInherit) {
         const parent = await this.folderRepository.findOne({
@@ -163,11 +164,20 @@ export class FoldersService {
       }
     }
 
+    // Derive unit from the resolved folder role (active role context), not user's primary role
+    let folderUnit = 'general';
+    if (folderRoleId) {
+      const folderRole = await this.roleRepository.findOne({ where: { id: folderRoleId } });
+      folderUnit = folderRole?.name?.toLowerCase().substring(0, 50) || 'general';
+    } else if (user?.role?.name) {
+      folderUnit = user.role.name.toLowerCase().substring(0, 50);
+    }
+
     const folder = this.folderRepository.create({
       ...createFolderDto,
       role_id: folderRoleId,
       owner: { id: userId } as User,
-      unit: user?.role?.name?.toLowerCase().substring(0, 50) || 'general',
+      unit: folderUnit,
     });
 
     const savedFolder = await this.folderRepository.save(folder);
@@ -204,11 +214,35 @@ export class FoldersService {
       }
     }
 
-    // NOTE: Sub-folders do NOT auto-inherit parent permissions.
-    // Each sub-folder's permissions are explicitly set via share_with_roles
-    // and user_permissions. This ensures granular access control where
-    // a parent folder can share with Dosen+Tendik, but a sub-folder
-    // can be restricted to only Tendik.
+    // If creating a subfolder inside an already-shared parent and the caller did NOT
+    // explicitly specify share_with_roles, inherit the parent's role-based permissions.
+    // This ensures users who can see the parent automatically see new subfolders too.
+    // Skip for private-role folders: a private workspace subfolder must not inherit role-level
+    // permissions from the parent, as that would make it visible to all members of those roles.
+    if (createFolderDto.parent_id && !createFolderDto.share_with_roles?.length && !activeRole?.is_private) {
+      const parentRolePerms = await this.permissionRepository.find({
+        where: { folder_id: createFolderDto.parent_id, user_id: IsNull() },
+      });
+      for (const parentPerm of parentRolePerms) {
+        if (!parentPerm.role_id) continue;
+        if (parentPerm.role_id === creatorRoleId) continue; // already set above
+        const existing = await this.permissionRepository.findOne({
+          where: { folder_id: savedFolder.id, role_id: parentPerm.role_id, user_id: IsNull() },
+        });
+        if (!existing) {
+          await this.permissionRepository.save({
+            folder_id: savedFolder.id,
+            role_id: parentPerm.role_id,
+            can_read: parentPerm.can_read,
+            can_create: parentPerm.can_create,
+            can_update: parentPerm.can_update,
+            can_delete: parentPerm.can_delete,
+            can_download: parentPerm.can_download,
+            expires_at: parentPerm.expires_at ?? null,
+          });
+        }
+      }
+    }
 
     // Auto-share with specified roles (e.g. dosen, tendik)
     if (createFolderDto.share_with_roles && createFolderDto.share_with_roles.length > 0) {
@@ -327,32 +361,45 @@ export class FoldersService {
     return folder;
   }
 
-  /**
-   * Get a single folder with its details for a specific user.
-   * All children are shown (so user can see subfolders exist), but
-   * access control is enforced when the user tries to navigate into
-   * a subfolder - the getFiles endpoint checks permissions and returns
-   * 403 "Akses Ditolak" if the user lacks access.
-   */
   async findOneForUser(id: string, user: User): Promise<Folder> {
     const folder = await this.folderRepository.findOne({
       where: { id },
-      relations: ['parent', 'permissions', 'permissions.role', 'permissions.user', 'owner'],
+      relations: ['parent', 'permissions', 'permissions.role', 'permissions.user', 'owner', 'role'],
     });
 
     if (!folder) {
       throw new NotFoundException('Folder not found');
     }
 
-    // Load children separately with owner+role so we can apply privacy filtering.
-    // Rule: hide a child if its OWNER's role is_private=true AND owner is not the current user.
-    // This correctly handles both old data (role_id inherited) and new data (role_id kept private).
     const allChildren = await this.folderRepository.find({
       where: { parent_id: id, deleted_at: IsNull() },
       relations: { owner: { role: true } },
       order: { name: 'ASC' },
     });
 
+    const isOwner = folder.owner_id === user.id;
+    if (!isOwner) {
+      // Private workspace folder: non-owner is never allowed to open it.
+      if (folder.role?.is_private) {
+        throw new ForbiddenException('Access denied');
+      }
+
+      const activeRoleId = (user as any).active_role_id || user.role_id;
+      const hasSharedAccess = await this.checkPermission(user.id, activeRoleId, id, 'read');
+      if (hasSharedAccess) {
+        // Apply the same privacy filter as the owner path: hide private-workspace
+        // subfolders created by other users so they remain isolated.
+        folder.children = allChildren.filter((child) => {
+          if (child.owner_id === user.id) return true;
+          const ownerRoleIsPrivate = (child.owner as any)?.role?.is_private === true;
+          return !ownerRoleIsPrivate;
+        });
+        return folder;
+      }
+    }
+
+    // Owner or workspace-scoped access: apply privacy filter so that private-role
+    // subfolders created by other users remain isolated.
     folder.children = allChildren.filter((child) => {
       if (child.owner_id === user.id) return true;
       const ownerRoleIsPrivate = (child.owner as any)?.role?.is_private === true;
@@ -473,6 +520,25 @@ export class FoldersService {
     return this.buildTree(folders);
   }
 
+  private async expandDescendants(folderIds: string[]): Promise<string[]> {
+    const allIds = new Set(folderIds);
+    const queue = [...folderIds];
+    while (queue.length > 0) {
+      const batch = queue.splice(0, 100);
+      const children = await this.folderRepository.find({
+        where: { parent_id: In(batch), deleted_at: IsNull() },
+        select: ['id'],
+      });
+      for (const child of children) {
+        if (!allIds.has(child.id)) {
+          allIds.add(child.id);
+          queue.push(child.id);
+        }
+      }
+    }
+    return [...allIds];
+  }
+
   async getSharedTree(user: User): Promise<any[]> {
     const activeRoleId = (user as any).active_role_id || user.role_id;
     const now = new Date();
@@ -503,9 +569,14 @@ export class FoldersService {
 
     const roleSharedIds = new Set(rolePerms.map((p) => p.folder_id));
     const userSharedIds = new Set(userPerms.map((p) => p.folder_id));
-    const allSharedIds = [...new Set([...roleSharedIds, ...userSharedIds])];
+    const directSharedIds = [...new Set([...roleSharedIds, ...userSharedIds])];
 
-    if (!allSharedIds.length) return [];
+    if (!directSharedIds.length) return [];
+
+    // Expand: include all descendant subfolders of the directly-shared folders.
+    // Without this, a Dosen user who has access to a parent folder would see the
+    // parent but none of its children (they have no direct permission records).
+    const allSharedIds = await this.expandDescendants(directSharedIds);
 
     const folders = await this.folderRepository.find({
       where: { id: In(allSharedIds), deleted_at: IsNull() },
@@ -521,9 +592,19 @@ export class FoldersService {
     //    "My Folders" in their workspace tree. This prevents implicit auto-duplication.
     //  - Role-based shares on others' folders: only show when the workspace differs from
     //    the active role (same-workspace folders are already visible in "My Folders").
+    //  - Descendants of directly-shared folders are included via expandDescendants; the
+    //    same filter rules apply and work correctly because descendants are owned by the
+    //    sharer (owner_id ≠ current user) and have a different role_id than activeRoleId.
     const sharedFolders = folders.filter((f) => {
+      // Private workspace folder not owned by the current user must never appear
+      // in the shared tree, regardless of role-level permission records.
+      if (f.role?.is_private && f.owner_id !== user.id) return false;
+
       if (userSharedIds.has(f.id)) return true;
-      if (f.owner_id === user.id) return false;
+      // Hanya exclude folder milik user jika folder itu ada di workspace role aktif saat ini
+      // (sudah terlihat di "My Folders"). Folder dari workspace lain (beda role) tetap tampil
+      // jika ada role-permission untuk role aktif.
+      if (f.owner_id === user.id && f.role_id === activeRoleId) return false;
       return f.role_id !== activeRoleId;
     });
 
@@ -596,6 +677,51 @@ export class FoldersService {
     return rootFolders;
   }
 
+  private async propagatePermissionsToDescendants(
+    parentId: string,
+    addedRoleIds: string[],
+    removedRoleIds: string[],
+    ownerRoleId: string | null,
+  ): Promise<void> {
+    if (!addedRoleIds.length && !removedRoleIds.length) return;
+    const children = await this.folderRepository.find({
+      where: { parent_id: parentId, deleted_at: IsNull() },
+      select: ['id'],
+    });
+    for (const child of children) {
+      if (removedRoleIds.length) {
+        await this.permissionRepository
+          .createQueryBuilder()
+          .delete()
+          .from(FolderPermission)
+          .where('folder_id = :folderId', { folderId: child.id })
+          .andWhere('role_id IN (:...roleIds)', { roleIds: removedRoleIds })
+          .andWhere('user_id IS NULL')
+          .execute();
+      }
+      for (const roleId of addedRoleIds) {
+        if (roleId === ownerRoleId) continue;
+        const existing = await this.permissionRepository.findOne({
+          where: { folder_id: child.id, role_id: roleId, user_id: IsNull() },
+        });
+        if (!existing) {
+          const role = await this.roleRepository.findOne({ where: { id: roleId } });
+          const isDosenOrTendik = role ? this.isDosenOrTendikRole(role.name) : false;
+          await this.permissionRepository.save({
+            folder_id: child.id,
+            role_id: roleId,
+            can_read: true,
+            can_download: false,
+            can_create: isDosenOrTendik,
+            can_update: isDosenOrTendik,
+            can_delete: isDosenOrTendik,
+          });
+        }
+      }
+      await this.propagatePermissionsToDescendants(child.id, addedRoleIds, removedRoleIds, ownerRoleId);
+    }
+  }
+
   async update(id: string, updateFolderDto: UpdateFolderDto): Promise<Folder> {
     const folder = await this.findOne(id);
 
@@ -622,6 +748,10 @@ export class FoldersService {
         if (role) targetRoleIds.push(role.id);
       }
 
+      // Track changes for recursive propagation to descendants
+      const addedRoleIds: string[] = [];
+      const removedRoleIds: string[] = [];
+
       // Hapus izin role yang tidak ada di targetRoleIds untuk folder ini
       // PENTING: Jangan hapus permission role milik owner folder sendiri
       const currentRolePerms = folder.permissions.filter(p => !!p.role_id);
@@ -630,6 +760,7 @@ export class FoldersService {
         if (p.role_id === ownerRoleId) continue;
         if (!targetRoleIds.includes(p.role_id!)) {
           await this.permissionRepository.delete(p.id);
+          removedRoleIds.push(p.role_id!);
         }
       }
 
@@ -649,8 +780,12 @@ export class FoldersService {
             can_update: isDosenOrTendik,
             can_delete: isDosenOrTendik,
           });
+          addedRoleIds.push(roleId);
         }
       }
+
+      // Propagate permission changes recursively to all existing subfolders
+      await this.propagatePermissionsToDescendants(folder.id, addedRoleIds, removedRoleIds, ownerRoleId);
     }
 
     // --- SINKRONISASI USER PERMISSIONS ---
@@ -758,37 +893,76 @@ export class FoldersService {
   ): Promise<boolean> {
     const now = new Date();
 
-    // Fetch ALL matching permissions (both user-level and role-level)
-    // so that user-level overrides (e.g. download) work alongside role-level (view-only)
-    const permissions = await this.permissionRepository
-      .createQueryBuilder('fp')
-      .where('fp.folder_id = :folderId', { folderId })
-      .andWhere(
-        '(fp.user_id = :userId OR fp.role_id = :roleId)',
-        { userId, roleId },
-      )
-      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .getMany();
+    // Load folder with role relation and permission records in parallel.
+    // The role relation is required to enforce private workspace isolation.
+    const [folder, permissions] = await Promise.all([
+      this.folderRepository.findOne({
+        where: { id: folderId },
+        relations: ['role'],
+      }),
+      this.permissionRepository
+        .createQueryBuilder('fp')
+        .where('fp.folder_id = :folderId', { folderId })
+        .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
+        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+        .getMany(),
+    ]);
+
+    if (!folder) return false;
+
+    // Folder owner always has full access regardless of permission records.
+    if (folder.owner_id === userId) return true;
+
+    // Private workspace folder: deny all non-owner access.
+    // Role-level permission records would otherwise match for any user with the same role,
+    // breaking the per-user isolation that is the whole point of Workspace Pribadi.
+    if (folder.role?.is_private) return false;
 
     if (permissions.length === 0) {
-      return false;
+      // No direct permission — check if user inherits access from an ancestor folder
+      // that was explicitly shared with them.
+      const ancestorIds: string[] = [];
+      let parentId = folder.parent_id;
+      while (parentId && ancestorIds.length < 10) {
+        const parent = await this.folderRepository.findOne({
+          where: { id: parentId },
+          select: ['id', 'owner_id', 'parent_id'],
+        });
+        if (!parent) break;
+        if (parent.owner_id === userId) return true;
+        ancestorIds.push(parent.id);
+        parentId = parent.parent_id ?? null;
+      }
+      if (!ancestorIds.length) return false;
+
+      const ancestorPerms = await this.permissionRepository
+        .createQueryBuilder('fp')
+        .where('fp.folder_id IN (:...folderIds)', { folderIds: ancestorIds })
+        .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
+        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+        .getMany();
+
+      return ancestorPerms.some(permission => {
+        switch (permissionType) {
+          case 'read': return permission.can_read;
+          case 'create': return permission.can_create;
+          case 'update': return permission.can_update;
+          case 'delete': return permission.can_delete;
+          case 'download': return permission.can_download;
+          default: return false;
+        }
+      });
     }
 
     // OR logic: if ANY permission record grants the requested type, allow it
     return permissions.some(permission => {
       switch (permissionType) {
-        case 'read':
-          return permission.can_read;
-        case 'create':
-          return permission.can_create;
-        case 'update':
-          return permission.can_update;
-        case 'delete':
-          return permission.can_delete;
-        case 'download':
-          return permission.can_download;
-        default:
-          return false;
+        case 'read': return permission.can_read;
+        case 'create': return permission.can_create;
+        case 'update': return permission.can_update;
+        case 'delete': return permission.can_delete;
+        case 'download': return permission.can_download;
+        default: return false;
       }
     });
   }

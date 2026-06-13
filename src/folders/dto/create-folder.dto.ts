@@ -1,4 +1,6 @@
-import { IsString, IsUUID, IsOptional, MinLength, IsArray, IsBoolean } from 'class-validator';
+import { IsString, IsUUID, IsOptional, MinLength, IsArray, IsBoolean, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { UserPermissionItemDto } from './update-folder.dto';
 
 export class CreateFolderDto {
   @IsString()
@@ -15,8 +17,10 @@ export class CreateFolderDto {
   share_with_roles?: string[];
 
   @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => UserPermissionItemDto)
   @IsOptional()
-  user_permissions?: any[];
+  user_permissions?: UserPermissionItemDto[];
 
   @IsArray()
   @IsString({ each: true })
@@ -27,4 +31,3 @@ export class CreateFolderDto {
   @IsOptional()
   is_shared_subfolder?: boolean;
 }
-

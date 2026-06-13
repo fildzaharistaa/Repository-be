@@ -14,14 +14,16 @@ import {
   Header,
   Headers,
   HttpStatus,
-  ParseFilePipe,
-  MaxFileSizeValidator
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { FilesService } from './files.service';
+import { SettingsService } from '../settings/settings.service';
 import { UpdateFileDto } from './update-file.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import type { RequestWithUser } from '../common/interfaces/request-with-user.interface';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
@@ -30,7 +32,10 @@ import * as fs from 'fs';
 @Controller('files')
 @UseGuards(JwtAuthGuard)
 export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(
+    private readonly filesService: FilesService,
+    private readonly settingsService: SettingsService,
+  ) {}
 
   @Post('upload/:folderId')
   @UseInterceptors(
@@ -45,19 +50,20 @@ export class FilesController {
           cb(null, `${randomName}${extname(file.originalname)}`);
         },
       }),
+      limits: { fileSize: 500 * 1024 * 1024 }, // hard cap 500 MB at Multer level
     }),
   )
   async uploadFile(
     @Param('folderId') folderId: string,
-    @UploadedFile(
-      new ParseFilePipe({
-        validators: [
-          new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024, message: 'File melebihi batas 5MB' }),
-        ],
-      }),
-    ) file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File,
     @Request() req: RequestWithUser,
   ) {
+    const maxSize = await this.settingsService.getMaxUploadSize();
+    if (file.size > maxSize) {
+      fs.unlink(file.path, () => {}); // cleanup orphan file from disk
+      const maxMB = (maxSize / (1024 * 1024)).toFixed(0);
+      throw new BadRequestException(`File melebihi batas maksimum ${maxMB}MB`);
+    }
     return this.filesService.create(file, folderId, req.user);
   }
 
@@ -123,6 +129,8 @@ export class FilesController {
     stream.pipe(res);
   }
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('file.download')
   @Get(':id/download')
   async download(
     @Param('id') id: string,

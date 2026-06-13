@@ -284,7 +284,7 @@ export class FilesService {
       user.id,
       activeRoleId,
       file.folder_id,
-      'download',
+      'read',
     );
 
     if (!hasPermission) {
