@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   GoneException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -62,10 +63,11 @@ export class ShareLinksService {
     return saved;
   }
 
-  async getByToken(token: string): Promise<{
+  async getByToken(token: string, userId?: string | null): Promise<{
     link: ShareLink;
     itemName: string;
     itemSize?: number;
+    mimeType?: string;
     sharedBy: string;
     sharedByEmail: string;
   }> {
@@ -80,18 +82,25 @@ export class ShareLinksService {
       throw new GoneException('Share link telah kadaluarsa');
     }
 
+    // Organization access restriction
+    if (link.access_level === 'organization' && !userId) {
+      throw new UnauthorizedException('Anda harus login untuk mengakses konten ini');
+    }
+
     // Increment view count
     await this.shareLinkRepo.increment({ id: link.id }, 'view_count', 1);
     link.view_count += 1;
 
     let itemName = '';
     let itemSize: number | undefined;
+    let mimeType: string | undefined;
 
     if (link.item_type === 'file') {
       const file = await this.fileRepo.findOne({ where: { id: link.item_id } });
       if (!file) throw new NotFoundException('File tidak ditemukan');
       itemName = file.name;
       itemSize = file.size;
+      mimeType = file.mime_type;
     } else {
       const folder = await this.folderRepo.findOne({ where: { id: link.item_id } });
       if (!folder) throw new NotFoundException('Folder tidak ditemukan');
@@ -102,6 +111,7 @@ export class ShareLinksService {
       link,
       itemName,
       itemSize,
+      mimeType,
       sharedBy: link.creator?.name ?? 'Unknown',
       sharedByEmail: link.creator?.email ?? '',
     };

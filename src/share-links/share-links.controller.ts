@@ -8,11 +8,13 @@ import {
   Param,
   Req,
   Res,
+  Headers,
   UseGuards,
   HttpStatus,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import * as fs from 'fs';
+import { JwtService } from '@nestjs/jwt';
 import { ShareLinksService } from './share-links.service';
 import { GenerateShareLinkDto } from './dto/generate-share-link.dto';
 import { UpdateShareLinkDto } from './dto/update-share-link.dto';
@@ -22,7 +24,10 @@ import type { RequestWithUser } from '../common/interfaces/request-with-user.int
 
 @Controller('share')
 export class ShareLinksController {
-  constructor(private readonly service: ShareLinksService) {}
+  constructor(
+    private readonly service: ShareLinksService,
+    private readonly jwtService: JwtService,
+  ) {}
 
   private serializeLink(link: any) {
     return {
@@ -66,15 +71,29 @@ export class ShareLinksController {
   // ── Public: get share link metadata ───────────────────────────────────────
   @Public()
   @Get(':token')
-  async getByToken(@Param('token') token: string) {
-    const { link, itemName, itemSize, sharedBy, sharedByEmail } =
-      await this.service.getByToken(token);
+  async getByToken(
+    @Param('token') token: string,
+    @Headers('authorization') auth?: string,
+  ) {
+    let userId: string | null = null;
+    if (auth?.startsWith('Bearer ')) {
+      try {
+        const payload = this.jwtService.verify(auth.slice(7)) as any;
+        userId = payload.sub || payload.id || null;
+      } catch {
+        userId = null;
+      }
+    }
+
+    const { link, itemName, itemSize, mimeType, sharedBy, sharedByEmail } =
+      await this.service.getByToken(token, userId);
     return {
       token: link.token,
       item_type: link.item_type,
       item_id: link.item_id,
       item_name: itemName,
       item_size: itemSize,
+      mime_type: mimeType,
       shared_by: sharedBy,
       shared_by_email: sharedByEmail,
       access_level: link.access_level,
