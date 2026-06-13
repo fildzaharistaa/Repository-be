@@ -41,7 +41,7 @@ export class FilesController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: diskStorage({
-        destination: './uploads',
+        destination: process.env.UPLOADS_DIR ?? './uploads',
         filename: (req, file, cb) => {
           const randomName = Array(32)
             .fill(null)
