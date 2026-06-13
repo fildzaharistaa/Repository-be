@@ -4,7 +4,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { File, Folder, User, SystemSetting, AccessRequest } from '../entities';
 import { FoldersService } from '../folders/folders.service';
 
@@ -175,6 +175,23 @@ export class FilesService {
       order: { created_at: 'DESC' },
     });
 
+    // Compute per-file can_download: owned files always downloadable,
+    // shared files only if there's an approved AccessRequest with can_download.
+    const nonOwnedFileIds = files.filter(f => f.owner_id !== user.id).map(f => f.id);
+    let downloadableIds = new Set<string>();
+    if (nonOwnedFileIds.length > 0) {
+      const ars = await this.fileRepository.manager.getRepository(AccessRequest).find({
+        where: {
+          requester: { id: user.id },
+          file: { id: In(nonOwnedFileIds) },
+          status: 'approved',
+          can_download: true,
+        },
+        relations: ['file'],
+      });
+      downloadableIds = new Set(ars.map(ar => ar.file.id));
+    }
+
     return files.map(f => ({
       ...f,
       uploaded_by: f.owner?.name ?? null,
@@ -185,6 +202,7 @@ export class FilesService {
       owner_name: f.owner?.name ?? null,
       owner_email: (f.owner as any)?.email ?? null,
       owner_role: (f as any).uploaded_by_role?.name ?? f.owner?.role?.name ?? null,
+      can_download: f.owner_id === user.id ? true : downloadableIds.has(f.id),
     }));
   }
 
