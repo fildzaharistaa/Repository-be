@@ -42,8 +42,9 @@ export class ShareLinksService {
       { is_active: false },
     );
 
+    const token = this.generateToken();
     const link = this.shareLinkRepo.create({
-      token: this.generateToken(),
+      token,
       item_type: dto.type,
       item_id: dto.id,
       created_by: userId,
@@ -55,7 +56,10 @@ export class ShareLinksService {
       download_count: 0,
     });
 
-    return this.shareLinkRepo.save(link);
+    const saved = await this.shareLinkRepo.save(link);
+    // TypeORM may lose token from RETURNING result due to dual-column mapping (created_by/@JoinColumn conflict)
+    if (!saved.token) saved.token = token;
+    return saved;
   }
 
   async getByToken(token: string): Promise<{
