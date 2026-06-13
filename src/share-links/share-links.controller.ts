@@ -63,31 +63,6 @@ export class ShareLinksController {
     return this.serializeLink(link);
   }
 
-  // ── Public: get share link metadata ───────────────────────────────────────
-  @Public()
-  @Get(':token')
-  async getByToken(@Param('token') token: string) {
-    const { link, itemName, itemSize, mimeType, sharedBy, sharedByEmail } =
-      await this.service.getByToken(token);
-    return {
-      token: link.token,
-      item_type: link.item_type,
-      item_id: link.item_id,
-      item_name: itemName,
-      item_size: itemSize,
-      mime_type: mimeType,
-      shared_by: sharedBy,
-      shared_by_email: sharedByEmail,
-      access_level: link.access_level,
-      permission: link.permission,
-      expires_at: link.expires_at,
-      is_active: link.is_active,
-      view_count: link.view_count,
-      download_count: link.download_count,
-      created_at: link.created_at,
-    };
-  }
-
   // ── Public: get folder contents (file list) ───────────────────────────────
   @Public()
   @Get(':token/contents')
@@ -184,6 +159,31 @@ export class ShareLinksController {
       });
       fs.createReadStream(file.path).pipe(res);
     }
+  }
+
+  // ── Public: get share link metadata ───────────────────────────────────────
+  @Public()
+  @Get(':token')
+  async getByToken(@Param('token') token: string) {
+    const { link, itemName, itemSize, mimeType, sharedBy, sharedByEmail } =
+      await this.service.getByToken(token);
+    return {
+      token: link.token,
+      item_type: link.item_type,
+      item_id: link.item_id,
+      item_name: itemName,
+      item_size: itemSize,
+      mime_type: mimeType,
+      shared_by: sharedBy,
+      shared_by_email: sharedByEmail,
+      access_level: link.access_level,
+      permission: link.permission,
+      expires_at: link.expires_at,
+      is_active: link.is_active,
+      view_count: link.view_count,
+      download_count: link.download_count,
+      created_at: link.created_at,
+    };
   }
 
   // ── Public: download file as attachment ───────────────────────────────────
