@@ -3,7 +3,6 @@ import {
   NotFoundException,
   ForbiddenException,
   GoneException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -63,7 +62,7 @@ export class ShareLinksService {
     return saved;
   }
 
-  async getByToken(token: string, userId?: string | null): Promise<{
+  async getByToken(token: string): Promise<{
     link: ShareLink;
     itemName: string;
     itemSize?: number;
@@ -80,11 +79,6 @@ export class ShareLinksService {
     if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
     if (link.expires_at && new Date(link.expires_at) < new Date()) {
       throw new GoneException('Share link telah kadaluarsa');
-    }
-
-    // Organization access restriction
-    if (link.access_level === 'organization' && !userId) {
-      throw new UnauthorizedException('Anda harus login untuk mengakses konten ini');
     }
 
     // Increment view count
