@@ -12,6 +12,7 @@ import {
   UserRole
 } from '../entities';
 import { AccessRequest } from '../access-requests/access-request.entity';
+import { ShareLink } from '../share-links/share-link.entity';
 
 export default registerAs(
   'database',
@@ -23,16 +24,17 @@ export default registerAs(
     password: process.env.DB_PASSWORD || 'postgres',
     database: process.env.DB_NAME || 'campus_repository',
     entities: [
-      User, 
-      Role, 
-      Folder, 
-      File, 
-      FolderPermission, 
-      AccessRequest, 
+      User,
+      Role,
+      Folder,
+      File,
+      FolderPermission,
+      AccessRequest,
       SystemSetting,
       Permission,
       RolePermission,
-      UserRole
+      UserRole,
+      ShareLink,
     ],
     synchronize: process.env.NODE_ENV !== 'production',
     logging: false,
