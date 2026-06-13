@@ -140,6 +140,62 @@ export class ShareLinksService {
     return { file, link };
   }
 
+  async getFolderContents(token: string): Promise<{
+    folderName: string;
+    permission: string;
+    files: Array<{ id: string; name: string; size: number; mime_type: string; created_at: Date }>;
+  }> {
+    const link = await this.shareLinkRepo.findOne({ where: { token } });
+    if (!link) throw new NotFoundException('Share link tidak ditemukan');
+    if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
+    if (link.expires_at && new Date(link.expires_at) < new Date()) throw new GoneException('Share link telah kadaluarsa');
+    if (link.item_type !== 'folder') throw new ForbiddenException('Link ini bukan untuk folder');
+
+    const folder = await this.folderRepo.findOne({ where: { id: link.item_id } });
+    if (!folder) throw new NotFoundException('Folder tidak ditemukan');
+
+    const files = await this.fileRepo.find({
+      where: { folder_id: link.item_id, deleted_at: null as any },
+      select: ['id', 'name', 'size', 'mime_type', 'created_at'],
+      order: { name: 'ASC' },
+    });
+
+    return {
+      folderName: folder.name,
+      permission: link.permission,
+      files: files.map(f => ({ id: f.id, name: f.name, size: f.size, mime_type: f.mime_type, created_at: f.created_at })),
+    };
+  }
+
+  async getFolderFileForView(token: string, fileId: string): Promise<{ file: File }> {
+    const link = await this.shareLinkRepo.findOne({ where: { token } });
+    if (!link) throw new NotFoundException('Share link tidak ditemukan');
+    if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
+    if (link.expires_at && new Date(link.expires_at) < new Date()) throw new GoneException('Share link telah kadaluarsa');
+    if (link.item_type !== 'folder') throw new ForbiddenException('Link ini bukan untuk folder');
+
+    const file = await this.fileRepo.findOne({ where: { id: fileId, folder_id: link.item_id } });
+    if (!file) throw new NotFoundException('File tidak ditemukan dalam folder ini');
+    if (!fs.existsSync(file.path)) throw new NotFoundException('File tidak ada di disk');
+
+    return { file };
+  }
+
+  async getFolderFileForDownload(token: string, fileId: string): Promise<{ file: File }> {
+    const link = await this.shareLinkRepo.findOne({ where: { token } });
+    if (!link) throw new NotFoundException('Share link tidak ditemukan');
+    if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
+    if (link.expires_at && new Date(link.expires_at) < new Date()) throw new GoneException('Share link telah kadaluarsa');
+    if (link.item_type !== 'folder') throw new ForbiddenException('Link ini bukan untuk folder');
+    if (link.permission !== 'download') throw new ForbiddenException('Link ini tidak mengizinkan download');
+
+    const file = await this.fileRepo.findOne({ where: { id: fileId, folder_id: link.item_id } });
+    if (!file) throw new NotFoundException('File tidak ditemukan dalam folder ini');
+    if (!fs.existsSync(file.path)) throw new NotFoundException('File tidak ada di disk');
+
+    return { file };
+  }
+
   async getFileForView(token: string): Promise<{ file: File; link: ShareLink }> {
     const link = await this.shareLinkRepo.findOne({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');

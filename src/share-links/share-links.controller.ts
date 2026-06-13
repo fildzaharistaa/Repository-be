@@ -88,6 +88,64 @@ export class ShareLinksController {
     };
   }
 
+  // ── Public: get folder contents (file list) ───────────────────────────────
+  @Public()
+  @Get(':token/contents')
+  async getFolderContents(@Param('token') token: string) {
+    return this.service.getFolderContents(token);
+  }
+
+  // ── Public: view a file inside a shared folder ────────────────────────────
+  @Public()
+  @Get(':token/file/:fileId/view')
+  async viewFolderFile(
+    @Param('token') token: string,
+    @Param('fileId') fileId: string,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
+    const { file } = await this.service.getFolderFileForView(token, fileId);
+    const stat = fs.statSync(file.path);
+    const fileSize = stat.size;
+    const range = req.headers['range'];
+
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+      const stream = fs.createReadStream(file.path, { start, end });
+      res.writeHead(HttpStatus.PARTIAL_CONTENT, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': file.mime_type,
+        'Content-Disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
+      });
+      stream.pipe(res);
+    } else {
+      res.writeHead(HttpStatus.OK, {
+        'Content-Length': fileSize,
+        'Content-Type': file.mime_type,
+        'Content-Disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
+        'Accept-Ranges': 'bytes',
+      });
+      fs.createReadStream(file.path).pipe(res);
+    }
+  }
+
+  // ── Public: download a file inside a shared folder ────────────────────────
+  @Public()
+  @Get(':token/file/:fileId/download')
+  async downloadFolderFile(
+    @Param('token') token: string,
+    @Param('fileId') fileId: string,
+    @Res() res: Response,
+  ) {
+    const { file } = await this.service.getFolderFileForDownload(token, fileId);
+    res.download(file.path, file.name);
+  }
+
   // ── Public: view file inline (preview) ────────────────────────────────────
   @Public()
   @Get(':token/view')
