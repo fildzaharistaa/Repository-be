@@ -46,7 +46,7 @@ export class ShareLinksController {
   @UseGuards(JwtAuthGuard)
   @Post('generate')
   async generate(@Body() dto: GenerateShareLinkDto, @Req() req: RequestWithUser) {
-    const link = await this.service.generate(req.user.id, dto);
+    const link = await this.service.generate(req.user, dto);
     return this.serializeLink(link);
   }
 

@@ -8,6 +8,7 @@ import { User } from '../entities/user.entity';
 import { Role } from '../entities/role.entity';
 import { FolderPermission } from '../entities/folder-permission.entity';
 import { SystemSetting } from '../entities/system-setting.entity';
+import { canShareOrModifyFile } from '../common/utils/file-access';
 
 @Injectable()
 export class AccessRequestsService {
@@ -557,19 +558,26 @@ export class AccessRequestsService {
   async directShareFile(
     fileId: string,
     data: { share_with_roles?: string[]; user_permissions?: any[]; message?: string },
-    ownerId: string
+    requester: User & { active_role_id?: string; active_role_name?: string },
   ) {
     const file = await this.fileRepo.findOne({
       where: { id: fileId },
-      relations: ['folder', 'folder.owner']
+      relations: ['folder', 'folder.owner', 'uploaded_by_role'],
     });
 
     if (!file) {
       throw new NotFoundException('File not found');
     }
 
-    if (file.folder?.owner?.id !== ownerId) {
-      throw new ForbiddenException('You do not own this file');
+    const ownerId = requester.id;
+
+    const allowed = await canShareOrModifyFile(
+      file as any,
+      requester as any,
+      { roleRepo: this.roleRepository },
+    );
+    if (!allowed) {
+      throw new ForbiddenException('Anda tidak berhak men-share file ini');
     }
 
     const results: AccessRequest[] = [];
@@ -642,7 +650,7 @@ export class AccessRequestsService {
         request = this.accessRequestRepo.create({
           requester: targetUser,
           file: file,
-          owner: file.folder.owner,
+          owner: file.folder.owner as User,
           status: 'approved',
           response_message: data.message || null,
           can_read: userPerms.can_read ?? true,
