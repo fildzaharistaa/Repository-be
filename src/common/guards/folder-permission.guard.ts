@@ -81,7 +81,7 @@ export class FolderPermissionGuard implements CanActivate {
 
     const folder = await this.folderRepository.findOne({
       where: { id: folderId },
-      relations: ['owner'],
+      relations: ['owner', 'role'],
     });
 
     if (!folder) {
@@ -92,6 +92,13 @@ export class FolderPermissionGuard implements CanActivate {
     // they are currently operating under. This only covers the owner themselves.
     if (folder.owner?.id === userId) {
       return true;
+    }
+
+    // Private workspace folder: only the owner (already returned above) may access it.
+    // Without this check, the workspace-role match below would grant every same-role
+    // member full access to another user's Workspace Pribadi folder.
+    if (folder.role?.is_private && folder.owner_id !== userId) {
+      return false;
     }
 
     // Allow access if the requester's active role matches the folder's workspace role

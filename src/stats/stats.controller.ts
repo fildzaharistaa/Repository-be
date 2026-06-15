@@ -156,8 +156,10 @@ export class StatsController {
     // Get system settings
     const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
     const maxStorageSetting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
+    const maxUploadSetting = await this.settingRepository.findOne({ where: { key: 'max_upload_size' } });
     const maxFolderDepth = maxDepthSetting ? parseInt(maxDepthSetting.value, 10) : 5;
     const maxStoragePerUser = maxStorageSetting ? parseInt(maxStorageSetting.value, 10) : 104857600;
+    const maxUploadSize = maxUploadSetting ? parseInt(maxUploadSetting.value, 10) : 5242880;
 
     return {
       totalRoles,
@@ -166,6 +168,7 @@ export class StatsController {
       totalSize,
       maxFolderDepth,
       maxStoragePerUser,
+      maxUploadSize,
       foldersPerUnit,
       storagePerUnit,
       usersPerRole,
@@ -481,20 +484,34 @@ export class StatsController {
 
     const now = new Date();
 
-    const workspaceFolders = await this.folderRepository
+    const activeRole = await this.roleRepository.findOne({ where: { id: activeRoleId } });
+
+    // For private roles (e.g. Dosen/Tendik), only surface folders owned by the current user.
+    // Non-private roles see all folders in their role workspace.
+    const workspaceQuery = this.folderRepository
       .createQueryBuilder('folder')
       .select('folder.id', 'id')
       .where('folder.role_id = :activeRoleId', { activeRoleId })
-      .andWhere('folder.deleted_at IS NULL')
-      .getRawMany();
+      .andWhere('folder.deleted_at IS NULL');
 
+    if (activeRole?.is_private) {
+      workspaceQuery.andWhere('folder.owner_id = :userId', { userId });
+    }
+
+    const workspaceFolders = await workspaceQuery.getRawMany();
+
+    // Only include folders whose role_id differs from the active role.
+    // This excludes same-role workspace folders (already covered above) and prevents
+    // private subfolders with a role-level permission from leaking to all role members.
     const roleSharedPerms = await this.permissionRepository
       .createQueryBuilder('fp')
+      .innerJoin('folders', 'folder', 'folder.id = fp.folder_id AND folder.deleted_at IS NULL')
       .select('fp.folder_id', 'folder_id')
       .where('fp.role_id = :activeRoleId', { activeRoleId })
       .andWhere('fp.user_id IS NULL')
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .andWhere('folder.role_id != :activeRoleId', { activeRoleId })
       .getRawMany();
 
     const userSharedPerms = await this.permissionRepository
