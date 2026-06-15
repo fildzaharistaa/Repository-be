@@ -4,7 +4,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, ILike, IsNull } from 'typeorm';
 import { File, Folder, User, SystemSetting, AccessRequest } from '../entities';
 import { FoldersService } from '../folders/folders.service';
 
@@ -408,6 +408,249 @@ export class FilesService {
     }
 
     await this.fileRepository.softRemove(file);
+  }
+
+  // ── Integration endpoints (dipanggil dari ikupk-be) ──────────────────────
+
+  async findByIdPublic(id: string): Promise<File | null> {
+    return this.fileRepository.findOne({ where: { id }, relations: ['owner'] });
+  }
+
+  async findFilesByJenisKodeAndEmail(
+    jenisLabel: string,
+    kode: string,
+    _nama: string,
+    email?: string,
+  ): Promise<File[]> {
+    const rootFolders = await this.folderRepository.find({
+      where: { name: ILike(`%${jenisLabel}%`), parent_id: IsNull() },
+    });
+    if (rootFolders.length === 0) return [];
+
+    const allFolders = await this.folderRepository.find();
+
+    const childrenMap = new Map<string, string[]>();
+    for (const f of allFolders) {
+      if (f.parent_id) {
+        const list = childrenMap.get(f.parent_id) ?? [];
+        list.push(f.id);
+        childrenMap.set(f.parent_id, list);
+      }
+    }
+
+    const descendantIds = new Set<string>();
+    const queue = rootFolders.map((f) => f.id);
+    while (queue.length > 0) {
+      const fid = queue.shift()!;
+      for (const childId of childrenMap.get(fid) ?? []) {
+        if (!descendantIds.has(childId)) {
+          descendantIds.add(childId);
+          queue.push(childId);
+        }
+      }
+    }
+
+    const k = kode.toLowerCase();
+    const matchingFolders = allFolders.filter((f) => {
+      if (!descendantIds.has(f.id)) return false;
+      const n = f.name.toLowerCase();
+      return n === k || n.startsWith(k + ' ') || n.startsWith(k + '-') || n.startsWith(k + '.');
+    });
+
+    if (matchingFolders.length === 0) return [];
+
+    const targetFolderIdSet = new Set<string>();
+    for (const f of matchingFolders) {
+      targetFolderIdSet.add(f.id);
+      (childrenMap.get(f.id) ?? []).forEach((c) => targetFolderIdSet.add(c));
+    }
+
+    let targetFolderIds = [...targetFolderIdSet];
+    if (targetFolderIds.length === 0) return [];
+
+    if (email) {
+      const user = await this.fileRepository.manager
+        .getRepository(User)
+        .findOne({ where: { email }, relations: ['role'] });
+
+      if (user) {
+        const permitted: string[] = [];
+        for (const folderId of targetFolderIds) {
+          const ok = await this.foldersService.checkPermission(
+            user.id, user.role_id, folderId, 'read',
+          );
+          if (ok) permitted.push(folderId);
+        }
+        if (permitted.length > 0) targetFolderIds = permitted;
+      }
+    }
+
+    return this.fileRepository.find({
+      where: { folder_id: In(targetFolderIds) },
+      relations: ['owner'],
+      order: { created_at: 'DESC' },
+    });
+  }
+
+  async findFilesByFolderNameAndUserEmail(folderName: string, email?: string): Promise<File[]> {
+    const matchingFolders = await this.folderRepository.find({
+      where: { name: ILike(`%${folderName}%`) },
+    });
+    if (matchingFolders.length === 0) return [];
+
+    const folderIds = matchingFolders.map((f) => f.id);
+
+    if (email) {
+      const user = await this.fileRepository.manager
+        .getRepository(User)
+        .findOne({ where: { email }, relations: ['role'] });
+
+      if (user) {
+        const accessible: File[] = [];
+        for (const folderId of folderIds) {
+          const hasPermission = await this.foldersService.checkPermission(
+            user.id, user.role_id, folderId, 'read',
+          );
+          if (!hasPermission) continue;
+          const files = await this.fileRepository.find({
+            where: { folder_id: folderId },
+            relations: ['owner'],
+            order: { created_at: 'DESC' },
+          });
+          accessible.push(...files);
+        }
+        return accessible;
+      }
+    }
+
+    return this.fileRepository.find({
+      where: { folder_id: In(folderIds) },
+      relations: ['owner'],
+      order: { created_at: 'DESC' },
+    });
+  }
+
+  async findFilesInChildFolders(parentFolderId: string, email: string): Promise<File[]> {
+    const user = await this.fileRepository.manager
+      .getRepository(User)
+      .findOne({ where: { email }, relations: ['role'] });
+    if (!user) return [];
+
+    const childFolders = await this.folderRepository.find({
+      where: { parent_id: parentFolderId },
+    });
+
+    const allFiles: File[] = [];
+
+    for (const child of childFolders) {
+      const hasPermission = await this.foldersService.checkPermission(
+        user.id, user.role_id, child.id, 'read',
+      );
+      if (!hasPermission) continue;
+      const files = await this.fileRepository.find({
+        where: { folder_id: child.id },
+        relations: ['owner'],
+        order: { created_at: 'DESC' },
+      });
+      allFiles.push(...files);
+    }
+
+    const hasParentPermission = await this.foldersService.checkPermission(
+      user.id, user.role_id, parentFolderId, 'read',
+    );
+    if (hasParentPermission) {
+      const directFiles = await this.fileRepository.find({
+        where: { folder_id: parentFolderId },
+        relations: ['owner'],
+        order: { created_at: 'DESC' },
+      });
+      allFiles.push(...directFiles);
+    }
+
+    return allFiles;
+  }
+
+  async debugSearchByJenisKode(
+    jenisLabel: string,
+    kode: string,
+    email?: string,
+  ): Promise<Record<string, any>> {
+    const rootFolders = await this.folderRepository.find({
+      where: { name: ILike(`%${jenisLabel}%`), parent_id: IsNull() },
+    });
+
+    const allFolders = await this.folderRepository.find();
+
+    const childrenMap = new Map<string, string[]>();
+    for (const f of allFolders) {
+      if (f.parent_id) {
+        const list = childrenMap.get(f.parent_id) ?? [];
+        list.push(f.id);
+        childrenMap.set(f.parent_id, list);
+      }
+    }
+
+    const descendantIds = new Set<string>();
+    const queue = rootFolders.map((f) => f.id);
+    while (queue.length > 0) {
+      const fid = queue.shift()!;
+      for (const childId of childrenMap.get(fid) ?? []) {
+        if (!descendantIds.has(childId)) {
+          descendantIds.add(childId);
+          queue.push(childId);
+        }
+      }
+    }
+
+    const k = kode.toLowerCase();
+    const matchingFolders = allFolders.filter((f) => {
+      if (!descendantIds.has(f.id)) return false;
+      const n = f.name.toLowerCase();
+      return n === k || n.startsWith(k + ' ') || n.startsWith(k + '-') || n.startsWith(k + '.');
+    });
+
+    let userInfo: any = null;
+    let permittedFolderIds: string[] = [];
+
+    if (email) {
+      const user = await this.fileRepository.manager
+        .getRepository(User)
+        .findOne({ where: { email }, relations: ['role'] });
+
+      if (user) {
+        userInfo = { id: user.id, email: user.email, role: user.role?.name };
+        for (const f of matchingFolders) {
+          const ok = await this.foldersService.checkPermission(user.id, user.role_id, f.id, 'read');
+          if (ok) permittedFolderIds.push(f.id);
+        }
+      }
+    }
+
+    const targetFolderIdSet = new Set<string>();
+    for (const f of matchingFolders) {
+      targetFolderIdSet.add(f.id);
+      (childrenMap.get(f.id) ?? []).forEach((c) => targetFolderIdSet.add(c));
+    }
+
+    const fileCount = targetFolderIdSet.size > 0
+      ? await this.fileRepository.count({ where: { folder_id: In([...targetFolderIdSet]) } })
+      : 0;
+
+    return {
+      jenisLabel,
+      kode,
+      email: email || null,
+      rootFolderFound: rootFolders.length > 0,
+      rootFolders: rootFolders.map((f) => ({ id: f.id, name: f.name })),
+      totalFoldersInDb: allFolders.length,
+      totalDescendants: descendantIds.size,
+      matchingFolders: matchingFolders.map((f) => ({ id: f.id, name: f.name })),
+      userFound: userInfo !== null,
+      user: userInfo,
+      permittedFolderIds,
+      targetFolderIds: [...targetFolderIdSet],
+      totalFilesInMatchingFolders: fileCount,
+    };
   }
 }
 

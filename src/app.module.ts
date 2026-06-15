@@ -23,6 +23,7 @@ import { SettingsModule } from './settings/settings.module';
 import { CronModule } from './cron/cron.module';
 import { SuperAdminModule } from './super-admin/super-admin.module';
 import { ShareLinksModule } from './share-links/share-links.module';
+import { IntegrationModule } from './integration/integration.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { ShareLinksModule } from './share-links/share-links.module';
     CronModule,
     SuperAdminModule,
     ShareLinksModule,
+    IntegrationModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
