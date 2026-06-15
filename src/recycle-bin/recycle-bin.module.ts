@@ -6,9 +6,13 @@ import { File } from '../entities/file.entity';
 import { Folder } from '../entities/folder.entity';
 import { FolderPermission } from '../entities/folder-permission.entity';
 import { AccessRequest } from '../access-requests/access-request.entity';
+import { SuperAdminModule } from '../super-admin/super-admin.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([File, Folder, FolderPermission, AccessRequest])],
+  imports: [
+    TypeOrmModule.forFeature([File, Folder, FolderPermission, AccessRequest]),
+    SuperAdminModule,
+  ],
   controllers: [RecycleBinController],
   providers: [RecycleBinService],
 })

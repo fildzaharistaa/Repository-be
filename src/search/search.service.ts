@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike } from 'typeorm';
+import { Repository, ILike, In } from 'typeorm';
 import { Folder } from '../entities/folder.entity';
 import { File } from '../entities/file.entity';
 import { FoldersService } from '../folders/folders.service';
@@ -24,10 +24,22 @@ export class SearchService {
   async globalSearch(keyword: string, user: User) {
 
     if (!keyword) {
-      return {
-        folders: [],
-        files: []
-      };
+      return { folders: [], files: [] };
+    }
+
+    // Use active_role_name from JWT (reflects the role the user switched to).
+    const activeRoleName = ((user as any).active_role_name ?? user.role?.name ?? '').toLowerCase();
+    const isAdmin = ['admin', 'super admin', 'superadmin'].includes(activeRoleName);
+
+    // Enforce "no access = no visibility": compute accessible folder IDs first so that
+    // the search query itself is pre-filtered.  This prevents private-role folders from
+    // other contexts from appearing in results even with hasAccess=false.
+    let accessibleFolderIds: string[] = [];
+    if (!isAdmin) {
+      accessibleFolderIds = await this.foldersService.getAccessibleFolderIds(user);
+      if (accessibleFolderIds.length === 0) {
+        return { folders: [], files: [] };
+      }
     }
 
     // =========================
@@ -35,72 +47,52 @@ export class SearchService {
     // =========================
     const folders = await this.folderRepo.find({
       where: {
-        name: ILike(`%${keyword}%`)
+        name: ILike(`%${keyword}%`),
+        ...(isAdmin ? {} : { id: In(accessibleFolderIds) }),
       },
       relations: ['parent', 'owner'],
-      take: 10
+      take: 10,
     });
 
     // =========================
-    // SEARCH FILE
+    // SEARCH FILE (within accessible folders only)
     // =========================
-    const files = await this.fileRepo.find({
-      where: {
-        name: ILike(`%${keyword}%`)
-      },
-      relations: ['folder', 'folder.owner'],
-      take: 10
-    });
+    const fileQuery = this.fileRepo
+      .createQueryBuilder('file')
+      .innerJoinAndSelect('file.folder', 'folder')
+      .leftJoinAndSelect('folder.owner', 'owner')
+      .where('file.name ILIKE :keyword', { keyword: `%${keyword}%` })
+      .andWhere('file.deleted_at IS NULL');
 
-    // Compute Access & Request Status
-    // Use active_role_name from JWT (reflects the role the user switched to) rather than
-    // user.role?.name which is the primary role and never changes during a session.
-    const activeRoleName = ((user as any).active_role_name ?? user.role?.name ?? '').toLowerCase();
-    const isAdmin = ['admin', 'super admin', 'superadmin'].includes(activeRoleName);
-    let accessibleFolderIds: string[] = [];
     if (!isAdmin) {
-      accessibleFolderIds = await this.foldersService.getAccessibleFolderIds(user);
+      fileQuery.andWhere('file.folder_id IN (:...folderIds)', { folderIds: accessibleFolderIds });
     }
-    const accessibleSet = new Set(accessibleFolderIds);
+    const files = await fileQuery.take(10).getMany();
 
     const userRequests = await this.accessRequestsService.getUserRequests(user.id);
     const folderRequestsMap = new Map(userRequests.filter(r => r.folder).map(r => [r.folder.id, r.status]));
     const fileRequestsMap = new Map(userRequests.filter(r => r.file).map(r => [r.file.id, r.status]));
 
     return {
-      folders: folders.map(folder => {
-        const hasAccess = isAdmin || folder.owner?.id === user.id || accessibleSet.has(folder.id);
-        const requestStatus = folderRequestsMap.get(folder.id) || null;
-        return {
-          id: folder.id,
-          name: folder.name,
-          type: 'folder',
-          parent: folder.parent?.name ?? 'Repository',
-          owner: folder.owner?.name,
-          hasAccess,
-          requestStatus
-        };
-      }),
+      folders: folders.map(folder => ({
+        id: folder.id,
+        name: folder.name,
+        type: 'folder',
+        parent: folder.parent?.name ?? 'Repository',
+        owner: folder.owner?.name,
+        hasAccess: true,  // All returned folders are pre-filtered to be accessible
+        requestStatus: folderRequestsMap.get(folder.id) || null,
+      })),
 
-      files: files.map(file => {
-        let hasAccess = isAdmin || file.folder?.owner?.id === user.id || (file.folder && accessibleSet.has(file.folder.id));
-        const requestStatus = fileRequestsMap.get(file.id) || null;
-        
-        // If there's an approved file request, they definitely have access
-        if (requestStatus === 'approved') {
-          hasAccess = true;
-        }
-
-        return {
-          id: file.id,
-          name: file.name,
-          type: 'file',
-          parent: file.folder?.name,
-          owner: file.folder?.owner?.name,
-          hasAccess,
-          requestStatus
-        };
-      })
+      files: files.map(file => ({
+        id: file.id,
+        name: file.name,
+        type: 'file',
+        parent: file.folder?.name,
+        owner: file.folder?.owner?.name,
+        hasAccess: true,  // All returned files are pre-filtered to be accessible
+        requestStatus: fileRequestsMap.get(file.id) || null,
+      })),
     };
   }
 }

@@ -193,53 +193,11 @@ export class StatsController {
     // Same pattern used in folders.service.ts:331, files.service.ts:90, users.controller.ts:62.
     const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id ?? null;
 
-    // Build accessible folder IDs as the union of:
-    //   1. Workspace folders  — owned by this role (folder.role_id = activeRoleId)
-    //   2. Role-based shared  — explicit FolderPermission grants to the whole role group
-    //   3. User-specific shared — personal FolderPermission grants scoped to this role (or role-agnostic)
-    // This mirrors the two-source model used in getSharedTree() in folders.service.ts, ensuring
-    // that dashboard counters, storage, and recent files reflect all resources accessible to the
-    // active role — not just folders the role owns. Cross-role contamination is prevented because
-    // shared entries require an explicit FolderPermission record with the correct role_id.
-    let accessibleFolderIds: string[] = [];
-
-    if (activeRoleId) {
-      const now = new Date();
-
-      // 1. Workspace folders owned by this role
-      const workspaceFolders = await this.folderRepository
-        .createQueryBuilder('folder')
-        .select('folder.id', 'id')
-        .where('folder.role_id = :activeRoleId', { activeRoleId })
-        .andWhere('folder.deleted_at IS NULL')
-        .getRawMany();
-
-      // 2. Role-based shared folders: grants issued to the entire role group (user_id IS NULL)
-      const roleSharedPerms = await this.permissionRepository
-        .createQueryBuilder('fp')
-        .select('fp.folder_id', 'folder_id')
-        .where('fp.role_id = :activeRoleId', { activeRoleId })
-        .andWhere('fp.user_id IS NULL')
-        .andWhere('fp.can_read = true')
-        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-        .getRawMany();
-
-      // 3. User-specific shared folders: personal grants in this role context or role-agnostic
-      const userSharedPerms = await this.permissionRepository
-        .createQueryBuilder('fp')
-        .select('fp.folder_id', 'folder_id')
-        .where('fp.user_id = :userId', { userId })
-        .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
-        .andWhere('fp.can_read = true')
-        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-        .getRawMany();
-
-      accessibleFolderIds = Array.from(new Set([
-        ...workspaceFolders.map((f) => f.id),
-        ...roleSharedPerms.map((p) => p.folder_id),
-        ...userSharedPerms.map((p) => p.folder_id),
-      ]));
-    }
+    // Delegate to the shared helper which correctly applies:
+    //   - owner_id filter for private roles (prevents other users' private folders from leaking)
+    //   - role_id isolation for user-level permissions with role_id=NULL (legacy data guard)
+    //   - same-workspace exclusion from role-based shared grants (avoids double-counting)
+    const accessibleFolderIds = await this.getAccessibleFolderIds(userId, activeRoleId);
 
     let totalFolders = 0;
     let totalFiles = 0;
@@ -506,21 +464,28 @@ export class StatsController {
     const roleSharedPerms = await this.permissionRepository
       .createQueryBuilder('fp')
       .innerJoin('folders', 'folder', 'folder.id = fp.folder_id AND folder.deleted_at IS NULL')
+      .leftJoin('roles', 'folderRole', 'folderRole.id = folder.role_id')
       .select('fp.folder_id', 'folder_id')
       .where('fp.role_id = :activeRoleId', { activeRoleId })
       .andWhere('fp.user_id IS NULL')
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
       .andWhere('folder.role_id != :activeRoleId', { activeRoleId })
+      .andWhere('NOT (folderRole.is_private = true AND folder.role_id != :activeRoleId)', { activeRoleId })
       .getRawMany();
 
+    // JOIN to folders/roles to exclude private-workspace folders that belong to a different
+    // role context — guards against legacy role_id=NULL permissions on private folders.
     const userSharedPerms = await this.permissionRepository
       .createQueryBuilder('fp')
+      .innerJoin('folders', 'f2', 'f2.id = fp.folder_id AND f2.deleted_at IS NULL')
+      .leftJoin('roles', 'r2', 'r2.id = f2.role_id')
       .select('fp.folder_id', 'folder_id')
       .where('fp.user_id = :userId', { userId })
       .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
       .getRawMany();
 
     return Array.from(new Set([
