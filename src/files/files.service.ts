@@ -7,6 +7,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { File, Folder, User, SystemSetting, AccessRequest, FileAccessLog } from '../entities';
 import { FoldersService } from '../folders/folders.service';
+import { canShareOrModifyFile } from '../common/utils/file-access';
 
 @Injectable()
 export class FilesService {
@@ -216,6 +217,8 @@ export class FilesService {
       // Do NOT fall back to owner.role.name — that is the uploader's CURRENT primary role
       // which is wrong for multi-role users who uploaded under a different active role.
       uploaded_by_role: (f as any).uploaded_by_role?.name ?? null,
+      uploaded_by_role_id: (f as any).uploaded_by_role_id ?? null,
+      folder_owner_id: folder.owner_id ?? null,
       owner_name: f.owner?.name ?? null,
       owner_email: (f.owner as any)?.email ?? null,
       owner_role: (f as any).uploaded_by_role?.name ?? f.owner?.role?.name ?? null,
@@ -355,7 +358,7 @@ export class FilesService {
   async rename(id: string, name: string, user: User): Promise<File> {
     const file = await this.fileRepository.findOne({
       where: { id },
-      relations: ['folder'],
+      relations: ['folder', 'folder.owner', 'uploaded_by_role'],
     });
 
     if (!file) {
@@ -378,7 +381,12 @@ export class FilesService {
       );
     }
 
-    await this.verifyOwnershipIfRestricted(file, user);
+    const allowed = await canShareOrModifyFile(file as any, user as any);
+    if (!allowed) {
+      throw new ForbiddenException(
+        'Anda tidak berhak mengubah nama file ini',
+      );
+    }
 
     file.name = name;
     return this.fileRepository.save(file);
