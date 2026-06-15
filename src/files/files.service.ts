@@ -4,8 +4,8 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { File, Folder, User, SystemSetting, AccessRequest } from '../entities';
+import { Repository, In } from 'typeorm';
+import { File, Folder, User, SystemSetting, AccessRequest, FileAccessLog } from '../entities';
 import { FoldersService } from '../folders/folders.service';
 
 @Injectable()
@@ -13,6 +13,8 @@ export class FilesService {
   constructor(
     @InjectRepository(File)
     private fileRepository: Repository<File>,
+    @InjectRepository(FileAccessLog)
+    private accessLogRepo: Repository<FileAccessLog>,
     @InjectRepository(Folder)
     private folderRepository: Repository<Folder>,
     @InjectRepository(SystemSetting)
@@ -131,7 +133,7 @@ export class FilesService {
     return this.fileRepository.save(fileEntity);
   }
 
-  async findAll(folderId: string, user: User): Promise<File[]> {
+  async findAll(folderId: string, user: User): Promise<any[]> {
     const folder = await this.folderRepository.findOne({
       where: { id: folderId },
     });
@@ -175,6 +177,38 @@ export class FilesService {
       order: { created_at: 'DESC' },
     });
 
+    // Compute per-file can_download: owned files always downloadable,
+    // shared files only if there's an approved AccessRequest with can_download.
+    const nonOwnedFileIds = files.filter(f => f.owner_id !== user.id).map(f => f.id);
+    let downloadableIds = new Set<string>();
+    if (nonOwnedFileIds.length > 0) {
+      const ars = await this.fileRepository.manager.getRepository(AccessRequest).find({
+        where: {
+          requester: { id: user.id },
+          file: { id: In(nonOwnedFileIds) },
+          status: 'approved',
+          can_download: true,
+        },
+        relations: ['file'],
+      });
+      downloadableIds = new Set(ars.map(ar => ar.file.id));
+    }
+
+    // Batch-fetch last_accessed_at per (file, user, role) — single query, no N+1
+    const accessMap = new Map<string, Date>();
+    if (files.length > 0) {
+      const logs = await this.accessLogRepo.find({
+        where: {
+          file_id: In(files.map(f => f.id)),
+          user_id: user.id,
+          role_id: activeRoleId,
+        },
+      });
+      for (const log of logs) {
+        accessMap.set(log.file_id, log.last_accessed_at);
+      }
+    }
+
     return files.map(f => ({
       ...f,
       uploaded_by: f.owner?.name ?? null,
@@ -185,6 +219,8 @@ export class FilesService {
       owner_name: f.owner?.name ?? null,
       owner_email: (f.owner as any)?.email ?? null,
       owner_role: (f as any).uploaded_by_role?.name ?? f.owner?.role?.name ?? null,
+      can_download: f.owner_id === user.id ? true : downloadableIds.has(f.id),
+      last_accessed_at: accessMap.get(f.id)?.toISOString() ?? null,
     }));
   }
 
@@ -390,6 +426,43 @@ export class FilesService {
     }
 
     await this.fileRepository.softRemove(file);
+  }
+
+  async recordAccess(fileId: string, user: User): Promise<{ last_accessed_at: string }> {
+    const file = await this.fileRepository.findOne({ where: { id: fileId }, relations: ['folder'] });
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
+    const hasPermission = await this.foldersService.checkPermission(
+      user.id,
+      activeRoleId,
+      file.folder_id,
+      'read',
+    );
+    if (!hasPermission) {
+      throw new ForbiddenException('You do not have read permission for this file');
+    }
+
+    const now = new Date();
+    let log = await this.accessLogRepo.findOne({
+      where: { file_id: fileId, user_id: user.id, role_id: activeRoleId },
+    });
+    if (log) {
+      log.last_accessed_at = now;
+    } else {
+      log = this.accessLogRepo.create({
+        file_id: fileId,
+        user_id: user.id,
+        role_id: activeRoleId,
+        last_accessed_at: now,
+      });
+    }
+    await this.accessLogRepo.save(log);
+
+    return { last_accessed_at: now.toISOString() };
   }
 }
 

@@ -43,7 +43,7 @@ export class FilesController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: diskStorage({
-        destination: './uploads',
+        destination: process.env.UPLOADS_DIR ?? './uploads',
         filename: (req, file, cb) => {
           const randomName = Array(32)
             .fill(null)
@@ -163,6 +163,11 @@ export class FilesController {
   async remove(@Param('id') id: string, @Request() req: RequestWithUser) {
     await this.filesService.remove(id, req.user);
     return { message: 'File deleted successfully' };
+  }
+
+  @Post(':id/access')
+  async recordAccess(@Param('id') id: string, @Request() req: RequestWithUser) {
+    return this.filesService.recordAccess(id, req.user);
   }
 }
 
