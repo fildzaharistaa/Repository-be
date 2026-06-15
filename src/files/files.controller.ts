@@ -160,6 +160,11 @@ export class FilesController {
     await this.filesService.remove(id, req.user);
     return { message: 'File deleted successfully' };
   }
+
+  @Post(':id/access')
+  async recordAccess(@Param('id') id: string, @Request() req: RequestWithUser) {
+    return this.filesService.recordAccess(id, req.user);
+  }
 }
 
 
