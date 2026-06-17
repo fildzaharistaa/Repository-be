@@ -666,7 +666,7 @@ export class FoldersService {
         updated_at: folder.updated_at,
         owner_name: folder.owner?.name || 'Unknown',
         owner_email: folder.owner?.email || '',
-        owner_role: folder.role?.name || folder.owner?.role?.name || 'Unknown',
+        owner_role: folder.role?.name ?? null,
         children: [],
       });
     });
