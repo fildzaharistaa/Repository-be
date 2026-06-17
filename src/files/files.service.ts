@@ -36,9 +36,13 @@ export class FilesService {
     const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
 
     if (isDosenOrTendik && file.owner_id !== user.id) {
-      // Bypass isolation when accessing a shared folder (folder not owned by this user)
+      // Bypass isolation when accessing a shared folder context.
+      // A folder is "shared" if: (a) the user doesn't own it, OR (b) the user owns it
+      // but created it under a different role than they are currently operating under.
+      // Case (b) covers multi-role users (e.g. Bambang-Dosen viewing his own WD2 folder).
+      const activeRoleId = (user as any).active_role_id || user.role_id;
       const folder = await this.folderRepository.findOne({ where: { id: file.folder_id } });
-      if (folder && folder.owner_id !== user.id) {
+      if (folder && (folder.owner_id !== user.id || folder.role_id !== activeRoleId)) {
         return; // Shared folder context — all files are visible to users with folder access
       }
 
@@ -165,9 +169,12 @@ export class FilesService {
     const isDosenOrTendik = activeRoleName.includes('dosen') || activeRoleName.includes('tendik');
 
     const whereCondition: any = { folder_id: folderId };
-    // Apply ownership isolation only in the user's own folder.
-    // Shared folders (owned by someone else) show all files to anyone with folder access.
-    const isOwnFolder = folder.owner_id === user.id;
+    // Apply ownership isolation only when the folder truly belongs to the user in their
+    // current role context. A multi-role user (e.g. Bambang who is both WD2 and Dosen)
+    // may own a folder they created under a different role. When they access it via the
+    // Dosen role (because it was shared with Dosen), it must be treated as a shared folder
+    // so that files uploaded by others (e.g. Abi) remain visible.
+    const isOwnFolder = folder.owner_id === user.id && folder.role_id === activeRoleId;
     if (isDosenOrTendik && isOwnFolder) {
       whereCondition.owner_id = user.id;
     }
