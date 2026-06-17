@@ -36,6 +36,19 @@ export async function canShareOrModifyFile(
     !folderRoleId || !activeRoleId || folderRoleId === activeRoleId;
   if (folderOwnerId && folderOwnerId === user.id && activeRoleMatchesFolderRole) return true;
 
+  // Non-private role workspace: any member whose active role matches the folder's
+  // owner role has the same modify rights as the folder creator — including over
+  // files uploaded by users from other roles who were granted access to the folder.
+  // Private roles (Dosen/Tendik) are excluded: their folders are individual workspaces.
+  const activeRoleName = (user as any).active_role_name ?? user.role?.name ?? null;
+  const activeRoleIsPrivate = isDosenOrTendikName(activeRoleName);
+  if (
+    !activeRoleIsPrivate &&
+    folderRoleId != null &&
+    activeRoleId != null &&
+    folderRoleId === activeRoleId
+  ) return true;
+
   // Beyond folder-owner/admin, visibility is role-scoped. The viewer's *active*
   // role must match the role the file was uploaded under. Same user with a
   // different active role does NOT bypass this.
