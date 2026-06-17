@@ -218,7 +218,7 @@ export class FilesService {
       uploaded_by_role: (f as any).uploaded_by_role?.name ?? null,
       owner_name: f.owner?.name ?? null,
       owner_email: (f.owner as any)?.email ?? null,
-      owner_role: (f as any).uploaded_by_role?.name ?? f.owner?.role?.name ?? null,
+      owner_role: (f as any).uploaded_by_role?.name ?? null,
       can_download: f.owner_id === user.id ? true : downloadableIds.has(f.id),
       last_accessed_at: accessMap.get(f.id)?.toISOString() ?? null,
     }));
