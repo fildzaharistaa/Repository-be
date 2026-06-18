@@ -58,11 +58,16 @@ export class AccessRequestsController {
 
   // =============================
   // GET SHARED FILES
+  // Passes the active role ID from JWT so the backend can filter
+  // file_permissions by (user_id + role_id) matching the current session.
   // =============================
   @Get('shared-files')
   getSharedFiles(@Req() req) {
+    const activeRoleId: string =
+      (req.user as any).active_role_id ?? req.user.role_id;
     return this.accessRequestsService.getSharedFiles(
-      req.user.id
+      req.user.id,
+      activeRoleId,
     );
   }
 

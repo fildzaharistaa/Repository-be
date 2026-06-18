@@ -4,8 +4,8 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
-import { File, Folder, User, SystemSetting, AccessRequest, FileAccessLog } from '../entities';
+import { Repository, In, IsNull } from 'typeorm';
+import { File, Folder, User, SystemSetting, AccessRequest, FileAccessLog, FilePermission } from '../entities';
 import { FoldersService } from '../folders/folders.service';
 import { canShareOrModifyFile } from '../common/utils/file-access';
 
@@ -20,6 +20,8 @@ export class FilesService {
     private folderRepository: Repository<Folder>,
     @InjectRepository(SystemSetting)
     private settingRepository: Repository<SystemSetting>,
+    @InjectRepository(FilePermission)
+    private filePermissionRepo: Repository<FilePermission>,
     private foldersService: FoldersService,
   ) { }
 
@@ -286,8 +288,22 @@ export class FilesService {
     );
 
     if (!hasPermission) {
-      // Check file-level permission via AccessRequest (can_read is enough)
-      const filePerm = await this.fileRepository.manager.findOne(AccessRequest, {
+      // Check file-level permission via new file_permissions table
+      // Matches either an exact role-scoped grant or a role-agnostic grant (role_id IS NULL).
+      const filePerm = await this.filePermissionRepo.findOne({
+        where: [
+          { file_id: file.id, user_id: user.id, role_id: activeRoleId, can_read: true },
+          { file_id: file.id, user_id: user.id, role_id: IsNull() as any, can_read: true },
+        ],
+      });
+      if (filePerm) {
+        hasPermission = true;
+      }
+    }
+
+    if (!hasPermission) {
+      // Legacy fallback: AccessRequest-based grants (pre-migration shares)
+      const legacyPerm = await this.fileRepository.manager.findOne(AccessRequest, {
         where: {
           requester: { id: user.id },
           file: { id: file.id },
@@ -295,9 +311,7 @@ export class FilesService {
           can_read: true,
         },
       });
-      if (filePerm) {
-        hasPermission = true;
-      }
+      if (legacyPerm) hasPermission = true;
     }
 
     if (!hasPermission) {
@@ -330,12 +344,25 @@ export class FilesService {
       user.id,
       activeRoleId,
       file.folder_id,
-      'read',
+      'download',
     );
 
     if (!hasPermission) {
-      // Check file-level permission via AccessRequest
-      const filePerm = await this.fileRepository.manager.findOne(require('../access-requests/access-request.entity').AccessRequest, {
+      // Check file-level permission via new file_permissions table
+      const filePerm = await this.filePermissionRepo.findOne({
+        where: [
+          { file_id: file.id, user_id: user.id, role_id: activeRoleId, can_download: true },
+          { file_id: file.id, user_id: user.id, role_id: IsNull() as any, can_download: true },
+        ],
+      });
+      if (filePerm) {
+        hasPermission = true;
+      }
+    }
+
+    if (!hasPermission) {
+      // Legacy fallback: AccessRequest-based grants (pre-migration shares)
+      const legacyPerm = await this.fileRepository.manager.findOne(AccessRequest, {
         where: {
           requester: { id: user.id },
           file: { id: file.id },
@@ -343,9 +370,7 @@ export class FilesService {
           can_download: true,
         },
       });
-      if (filePerm) {
-        hasPermission = true;
-      }
+      if (legacyPerm) hasPermission = true;
     }
 
     if (!hasPermission) {

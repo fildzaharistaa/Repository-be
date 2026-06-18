@@ -23,7 +23,10 @@ export async function canShareOrModifyFile(
   deps?: { roleRepo?: Repository<Role> },
 ): Promise<boolean> {
   if (!user?.id) return false;
-  if (user.role?.is_admin) return true;
+  // Use the active role's is_admin flag when available — mirrors the frontend's
+  // AuthContext.isAdmin which derives from activeRole, not the primary role.
+  const effectiveRole = (user as any).active_role ?? user.role ?? null;
+  if (effectiveRole?.is_admin === true) return true;
 
   const activeRoleId = user.active_role_id ?? user.role_id ?? null;
 
