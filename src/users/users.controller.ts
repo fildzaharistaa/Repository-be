@@ -122,13 +122,6 @@ export class UsersController {
     return this.usersService.create(createUserDto);
   }
 
-  @Post('import-excel')
-  @UseGuards(RolesGuard)
-  @Roles('admin')
-  async importExcel(@Body() usersData: any[]) {
-    return this.usersService.importExcel(usersData);
-  }
-
   @Patch(':id')
   @UseGuards(RolesGuard)
   @Roles('admin')
