@@ -187,11 +187,22 @@ export class FilesService {
       order: { created_at: 'DESC' },
     });
 
-    // Compute per-file can_download: owned files always downloadable,
-    // shared files only if there's an approved AccessRequest with can_download.
+    // Check folder-level can_download permission for the active role/user.
+    // This covers the primary case: a role-shared folder with can_download=true.
+    const folderDownloadAllowed = await this.foldersService.checkPermission(
+      user.id,
+      activeRoleId,
+      folderId,
+      'download',
+    );
+
+    // Compute per-file can_download:
+    //  1. Owner always can download their own files.
+    //  2. If folder-level can_download is granted → all files in the folder are downloadable.
+    //  3. Fallback: check approved AccessRequest with can_download=true (legacy file-level shares).
     const nonOwnedFileIds = files.filter(f => f.owner_id !== user.id).map(f => f.id);
-    let downloadableIds = new Set<string>();
-    if (nonOwnedFileIds.length > 0) {
+    let legacyDownloadableIds = new Set<string>();
+    if (!folderDownloadAllowed && nonOwnedFileIds.length > 0) {
       const ars = await this.fileRepository.manager.getRepository(AccessRequest).find({
         where: {
           requester: { id: user.id },
@@ -201,7 +212,7 @@ export class FilesService {
         },
         relations: ['file'],
       });
-      downloadableIds = new Set(ars.map(ar => ar.file.id));
+      legacyDownloadableIds = new Set(ars.map(ar => ar.file.id));
     }
 
     // Batch-fetch last_accessed_at per (file, user, role) — single query, no N+1
@@ -231,7 +242,9 @@ export class FilesService {
       owner_name: f.owner?.name ?? null,
       owner_email: (f.owner as any)?.email ?? null,
       owner_role: (f as any).uploaded_by_role?.name ?? null,
-      can_download: f.owner_id === user.id ? true : downloadableIds.has(f.id),
+      can_download: f.owner_id === user.id
+        ? true
+        : (folderDownloadAllowed || legacyDownloadableIds.has(f.id)),
       last_accessed_at: accessMap.get(f.id)?.toISOString() ?? null,
     }));
   }
@@ -339,6 +352,9 @@ export class FilesService {
     }
 
     const activeRoleId = (user as any).active_role_id || user.role_id;
+    const activeRoleName = (user as any).active_role_name ?? 'unknown';
+
+    console.log(`[Download] user=${user.id} role=${activeRoleId}(${activeRoleName}) file=${id} folder=${file.folder_id}`);
 
     let hasPermission = await this.foldersService.checkPermission(
       user.id,
@@ -346,6 +362,7 @@ export class FilesService {
       file.folder_id,
       'download',
     );
+    console.log(`[Download] folder-level can_download=${hasPermission}`);
 
     if (!hasPermission) {
       // Check file-level permission via new file_permissions table
@@ -356,6 +373,7 @@ export class FilesService {
         ],
       });
       if (filePerm) {
+        console.log(`[Download] granted via file_permissions record`);
         hasPermission = true;
       }
     }
@@ -370,10 +388,14 @@ export class FilesService {
           can_download: true,
         },
       });
-      if (legacyPerm) hasPermission = true;
+      if (legacyPerm) {
+        console.log(`[Download] granted via legacy AccessRequest`);
+        hasPermission = true;
+      }
     }
 
     if (!hasPermission) {
+      console.warn(`[Download] DENIED user=${user.id} role=${activeRoleId} file=${id} folder=${file.folder_id}`);
       throw new ForbiddenException(
         'You do not have download permission for this file',
       );

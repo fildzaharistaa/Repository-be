@@ -1,6 +1,6 @@
 import {
   IsString, IsOptional, MinLength, IsArray,
-  IsUUID, IsBoolean, ValidateNested,
+  IsUUID, IsBoolean, ValidateNested, IsObject,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -41,6 +41,15 @@ export class UpdateFolderDto {
   @IsString({ each: true })
   @IsOptional()
   share_with_roles?: string[];
+
+  /**
+   * Maps role ID → can_download for group role shares.
+   * Sent alongside share_with_roles to specify per-role download permission.
+   * e.g. { "<dosen-role-id>": true, "<tendik-role-id>": false }
+   */
+  @IsOptional()
+  @IsObject()
+  role_download_map?: Record<string, boolean>;
 
   @IsArray()
   @ValidateNested({ each: true })
