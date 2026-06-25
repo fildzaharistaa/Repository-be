@@ -1,15 +1,16 @@
 import { registerAs } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
-import { 
-  User, 
-  Role, 
-  Folder, 
-  File, 
-  FolderPermission, 
+import {
+  User,
+  Role,
+  Folder,
+  File,
+  FolderPermission,
   SystemSetting,
   Permission,
   RolePermission,
-  UserRole
+  UserRole,
+  FileAccessLog,
 } from '../entities';
 import { AccessRequest } from '../access-requests/access-request.entity';
 import { ShareLink } from '../share-links/share-link.entity';
@@ -35,6 +36,7 @@ export default registerAs(
       RolePermission,
       UserRole,
       ShareLink,
+      FileAccessLog,
     ],
     synchronize: process.env.NODE_ENV !== 'production',
     logging: false,

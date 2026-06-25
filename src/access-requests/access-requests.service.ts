@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { AccessRequest } from './access-request.entity';
 import { Folder } from '../entities/folder.entity';
 import { File } from '../entities/file.entity';
@@ -8,6 +8,7 @@ import { User } from '../entities/user.entity';
 import { Role } from '../entities/role.entity';
 import { FolderPermission } from '../entities/folder-permission.entity';
 import { SystemSetting } from '../entities/system-setting.entity';
+import { canShareOrModifyFile } from '../common/utils/file-access';
 
 @Injectable()
 export class AccessRequestsService {
@@ -428,7 +429,6 @@ export class AccessRequestsService {
       if (!r.file) continue;
       const file = r.file;
       if (!resultFiles.has(file.id)) {
-        const uploadedByRole = (file as any).uploaded_by_role?.name ?? r.owner?.role?.name ?? null;
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
@@ -439,14 +439,17 @@ export class AccessRequestsService {
           owner_id: r.owner?.id,
           owner_name: r.owner?.name || 'Unknown',
           owner_email: r.owner?.email || '(email tidak tersedia)',
-          owner_role: uploadedByRole,
+          owner_role: (file as any).uploaded_by_role?.name ?? null,
           uploaded_by: r.owner?.name || 'Unknown',
-          uploaded_by_role: uploadedByRole,
+          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
+          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
           can_read: r.can_read,
           can_download: r.can_download,
           can_create: r.can_create,
           can_update: r.can_update,
           can_delete: r.can_delete,
+          folder_id: file.folder_id ?? null,
+          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
         });
       }
     }
@@ -456,7 +459,6 @@ export class AccessRequestsService {
       if (!r.file) continue;
       const file = r.file;
       if (!resultFiles.has(file.id)) {
-        const myUploadedByRole = (file as any).uploaded_by_role?.name ?? me?.role?.name ?? null;
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
@@ -467,14 +469,17 @@ export class AccessRequestsService {
           owner_id: userId,
           owner_name: me?.name || 'Anda',
           owner_email: me?.email || '(email tidak tersedia)',
-          owner_role: myUploadedByRole,
+          owner_role: (file as any).uploaded_by_role?.name ?? null,
           uploaded_by: me?.name || 'Anda',
-          uploaded_by_role: myUploadedByRole,
+          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
+          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
           can_read: true,
           can_download: true,
           can_create: true,
           can_update: true,
           can_delete: true,
+          folder_id: file.folder_id ?? null,
+          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
         });
       }
     }
@@ -482,7 +487,6 @@ export class AccessRequestsService {
     // Process othersFilesInMyFolders
     for (const file of othersFilesInMyFolders) {
       if (!resultFiles.has(file.id)) {
-        const uploadedByRole = (file as any).uploaded_by_role?.name ?? file.owner?.role?.name ?? null;
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
@@ -493,15 +497,51 @@ export class AccessRequestsService {
           owner_id: file.owner_id,
           owner_name: file.owner?.name || 'Unknown',
           owner_email: file.owner?.email || '(email tidak tersedia)',
-          owner_role: uploadedByRole,
+          owner_role: (file as any).uploaded_by_role?.name ?? null,
           uploaded_by: file.owner?.name || 'Unknown',
-          uploaded_by_role: uploadedByRole,
+          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
+          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
           can_read: true,
           can_download: true,
           can_create: true,
           can_update: true,
           can_delete: true,
+          folder_id: file.folder_id ?? null,
+          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
         });
+      }
+    }
+
+    // Batch-fetch folder names for files that didn't get folder loaded (eager-relation issue)
+    const missingFolderIds = [...new Set(
+      Array.from(resultFiles.values())
+        .filter(f => !f.folder && f.folder_id)
+        .map(f => f.folder_id)
+    )];
+    if (missingFolderIds.length > 0) {
+      const folders = await this.folderRepo.find({ where: { id: In(missingFolderIds) } });
+      const folderMap = new Map(folders.map(f => [f.id, { id: f.id, name: f.name }]));
+      for (const [id, file] of resultFiles) {
+        if (!file.folder && file.folder_id && folderMap.has(file.folder_id)) {
+          resultFiles.set(id, { ...file, folder: folderMap.get(file.folder_id) });
+        }
+      }
+    }
+
+    // Batch-fetch role names for files where uploaded_by_role wasn't loaded (eager-relation issue)
+    const missingRoleIds = [...new Set(
+      Array.from(resultFiles.values())
+        .filter(f => !f.owner_role && f.uploaded_by_role_id)
+        .map(f => f.uploaded_by_role_id)
+    )];
+    if (missingRoleIds.length > 0) {
+      const roles = await this.roleRepository.find({ where: { id: In(missingRoleIds) } });
+      const roleMap = new Map(roles.map(r => [r.id, r.name]));
+      for (const [id, file] of resultFiles) {
+        if (!file.owner_role && file.uploaded_by_role_id && roleMap.has(file.uploaded_by_role_id)) {
+          const roleName = roleMap.get(file.uploaded_by_role_id);
+          resultFiles.set(id, { ...file, owner_role: roleName, uploaded_by_role: roleName });
+        }
       }
     }
 
@@ -518,19 +558,26 @@ export class AccessRequestsService {
   async directShareFile(
     fileId: string,
     data: { share_with_roles?: string[]; user_permissions?: any[]; message?: string },
-    ownerId: string
+    requester: User & { active_role_id?: string; active_role_name?: string },
   ) {
     const file = await this.fileRepo.findOne({
       where: { id: fileId },
-      relations: ['folder', 'folder.owner']
+      relations: ['folder', 'folder.owner', 'uploaded_by_role'],
     });
 
     if (!file) {
       throw new NotFoundException('File not found');
     }
 
-    if (file.folder?.owner?.id !== ownerId) {
-      throw new ForbiddenException('You do not own this file');
+    const ownerId = requester.id;
+
+    const allowed = await canShareOrModifyFile(
+      file as any,
+      requester as any,
+      { roleRepo: this.roleRepository },
+    );
+    if (!allowed) {
+      throw new ForbiddenException('Anda tidak berhak men-share file ini');
     }
 
     const results: AccessRequest[] = [];
@@ -603,7 +650,7 @@ export class AccessRequestsService {
         request = this.accessRequestRepo.create({
           requester: targetUser,
           file: file,
-          owner: file.folder.owner,
+          owner: file.folder.owner as User,
           status: 'approved',
           response_message: data.message || null,
           can_read: userPerms.can_read ?? true,

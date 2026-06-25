@@ -14,6 +14,7 @@ import { UpdateShareLinkDto } from './dto/update-share-link.dto';
 import { File } from '../entities/file.entity';
 import { Folder } from '../entities/folder.entity';
 import { User } from '../entities/user.entity';
+import { canShareOrModifyFile } from '../common/utils/file-access';
 
 @Injectable()
 export class ShareLinksService {
@@ -32,9 +33,13 @@ export class ShareLinksService {
     return crypto.randomBytes(32).toString('hex');
   }
 
-  async generate(userId: string, dto: GenerateShareLinkDto): Promise<ShareLink> {
-    // Verify the item exists and user owns it or is admin
-    await this.verifyItemOwnership(userId, dto.type, dto.id);
+  async generate(
+    user: User & { active_role_id?: string; active_role_name?: string },
+    dto: GenerateShareLinkDto,
+  ): Promise<ShareLink> {
+    const userId = user.id;
+    // Verify the item exists and user is allowed to share it
+    await this.verifyItemOwnership(user, dto.type, dto.id);
 
     // Deactivate any existing active share link for this item by this user
     await this.shareLinkRepo.update(
@@ -276,22 +281,49 @@ export class ShareLinksService {
     });
   }
 
-  private async verifyItemOwnership(userId: string, type: 'file' | 'folder', itemId: string): Promise<void> {
-    const user = await this.userRepo.findOne({
-      where: { id: userId },
-      relations: ['role'],
-    });
+  private async verifyItemOwnership(
+    requester: User & { active_role_id?: string; active_role_name?: string },
+    type: 'file' | 'folder',
+    itemId: string,
+  ): Promise<void> {
+    // Make sure the requester has `role` relation loaded (admin bypass relies on it).
+    let user: any = requester;
+    if (!user?.role) {
+      user = await this.userRepo.findOne({
+        where: { id: requester.id },
+        relations: ['role'],
+      });
+      if (requester) {
+        (user as any).active_role_id =
+          (requester as any).active_role_id ?? user.role_id;
+        (user as any).active_role_name = (requester as any).active_role_name;
+      }
+    }
 
-    const isAdmin = user?.role?.is_admin === true;
-    if (isAdmin) return;
+    if (user?.role?.is_admin === true) return;
 
-    if (type === 'file') {
-      const file = await this.fileRepo.findOne({ where: { id: itemId } });
-      if (!file) throw new NotFoundException('File tidak ditemukan');
-      // Allow any authenticated user to share files they can see
-    } else {
+    if (type === 'folder') {
       const folder = await this.folderRepo.findOne({ where: { id: itemId } });
       if (!folder) throw new NotFoundException('Folder tidak ditemukan');
+      if (folder.owner_id !== user.id) {
+        throw new ForbiddenException(
+          'Hanya pemilik folder yang dapat membuat share link folder',
+        );
+      }
+      return;
+    }
+
+    const file = await this.fileRepo.findOne({
+      where: { id: itemId },
+      relations: ['folder', 'folder.owner', 'uploaded_by_role'],
+    });
+    if (!file) throw new NotFoundException('File tidak ditemukan');
+
+    const allowed = await canShareOrModifyFile(file as any, user as any);
+    if (!allowed) {
+      throw new ForbiddenException(
+        'Anda tidak berhak membuat link untuk file ini',
+      );
     }
   }
 }

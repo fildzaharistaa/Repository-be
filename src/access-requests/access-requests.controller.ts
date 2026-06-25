@@ -78,7 +78,7 @@ export class AccessRequestsController {
     return this.accessRequestsService.directShareFile(
       fileId,
       body,
-      req.user.id
+      req.user
     );
   }
 

@@ -9,3 +9,4 @@ export { Permission } from './permission.entity';
 export type { PermissionVisibility } from './permission.entity';
 export { RolePermission } from './role-permission.entity';
 export { UserRole, UserRoleStatus } from './user-role.entity';
+export { FileAccessLog } from './file-access-log.entity';

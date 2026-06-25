@@ -371,39 +371,40 @@ export class FoldersService {
       throw new NotFoundException('Folder not found');
     }
 
-    const allChildren = await this.folderRepository.find({
-      where: { parent_id: id, deleted_at: IsNull() },
-      relations: { owner: { role: true } },
-      order: { name: 'ASC' },
-    });
-
+    const activeRoleId = (user as any).active_role_id || user.role_id;
     const isOwner = folder.owner_id === user.id;
-    if (!isOwner) {
-      // Private workspace folder: non-owner is never allowed to open it.
-      if (folder.role?.is_private) {
-        throw new ForbiddenException('Access denied');
-      }
 
-      const activeRoleId = (user as any).active_role_id || user.role_id;
-      const hasSharedAccess = await this.checkPermission(user.id, activeRoleId, id, 'read');
-      if (hasSharedAccess) {
-        // Apply the same privacy filter as the owner path: hide private-workspace
-        // subfolders created by other users so they remain isolated.
-        folder.children = allChildren.filter((child) => {
-          if (child.owner_id === user.id) return true;
-          const ownerRoleIsPrivate = (child.owner as any)?.role?.is_private === true;
-          return !ownerRoleIsPrivate;
-        });
-        return folder;
+    // Private-role folders are bound to the exact (user, role) creation context.
+    // Only the owner, operating under the folder's own role, may open it.
+    if (folder.role?.is_private) {
+      if (!isOwner || activeRoleId !== folder.role_id) {
+        throw new ForbiddenException('Access denied');
       }
     }
 
-    // Owner or workspace-scoped access: apply privacy filter so that private-role
-    // subfolders created by other users remain isolated.
+    if (!isOwner) {
+      const hasSharedAccess = await this.checkPermission(user.id, activeRoleId, id, 'read');
+      if (!hasSharedAccess) {
+        throw new ForbiddenException('Access denied');
+      }
+    }
+
+    // Load children with their own role relation so the privacy filter can inspect them.
+    const allChildren = await this.folderRepository.find({
+      where: { parent_id: id, deleted_at: IsNull() },
+      relations: { owner: { role: true }, role: true },
+      order: { name: 'ASC' },
+    });
+
+    // A private-role child is only visible when the current user is its owner AND is
+    // operating under the exact role the child belongs to.  Non-private children from
+    // another user's private workspace are always hidden regardless of ownership.
     folder.children = allChildren.filter((child) => {
-      if (child.owner_id === user.id) return true;
-      const ownerRoleIsPrivate = (child.owner as any)?.role?.is_private === true;
-      return !ownerRoleIsPrivate;
+      if ((child as any).role?.is_private) {
+        return child.owner_id === user.id && child.role_id === activeRoleId;
+      }
+      if ((child.owner as any)?.role?.is_private && child.owner_id !== user.id) return false;
+      return true;
     });
 
     return folder;
@@ -545,26 +546,35 @@ export class FoldersService {
 
     // --- 1. Role-based shared folders ---
     // Folders where a permission record targets the active role (user_id is irrelevant here;
-    // the grant is to the entire role group).
+    // the grant is to the entire role group).  A private-workspace folder should never
+    // receive cross-role grants, but guard here as defence-in-depth.
     const rolePerms = await this.permissionRepository
       .createQueryBuilder('fp')
+      .innerJoin('folders', 'f3', 'f3.id = fp.folder_id AND f3.deleted_at IS NULL')
+      .leftJoin('roles', 'r3', 'r3.id = f3.role_id')
       .select('fp.folder_id', 'folder_id')
       .where('fp.role_id = :roleId', { roleId: activeRoleId })
       .andWhere('fp.user_id IS NULL')
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .andWhere('NOT (r3.is_private = true AND f3.role_id != :roleId)', { roleId: activeRoleId })
       .getRawMany();
 
     // --- 2. User-specific shared folders ---
     // Explicit personal grants: permission targets this user, optionally scoped to their
     // current active role or with no role restriction (role_id IS NULL).
+    // JOIN to folders/roles so we can exclude private-workspace folders that belong to a
+    // different role context — guards against legacy role_id=NULL permissions on private folders.
     const userPerms = await this.permissionRepository
       .createQueryBuilder('fp')
+      .innerJoin('folders', 'f2', 'f2.id = fp.folder_id AND f2.deleted_at IS NULL')
+      .leftJoin('roles', 'r2', 'r2.id = f2.role_id')
       .select('fp.folder_id', 'folder_id')
       .where('fp.user_id = :userId', { userId: user.id })
       .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .andWhere('NOT (r2.is_private = true AND f2.role_id != :roleId)', { roleId: activeRoleId })
       .getRawMany();
 
     const roleSharedIds = new Set(rolePerms.map((p) => p.folder_id));
@@ -596,9 +606,9 @@ export class FoldersService {
     //    same filter rules apply and work correctly because descendants are owned by the
     //    sharer (owner_id ≠ current user) and have a different role_id than activeRoleId.
     const sharedFolders = folders.filter((f) => {
-      // Private workspace folder not owned by the current user must never appear
-      // in the shared tree, regardless of role-level permission records.
-      if (f.role?.is_private && f.owner_id !== user.id) return false;
+      // A private-role folder is bound exclusively to its (user, role) creation context.
+      // Hide it from all other role views — including the same user's other roles.
+      if (f.role?.is_private && f.role_id !== activeRoleId) return false;
 
       if (userSharedIds.has(f.id)) return true;
       // Hanya exclude folder milik user jika folder itu ada di workspace role aktif saat ini
@@ -656,7 +666,7 @@ export class FoldersService {
         updated_at: folder.updated_at,
         owner_name: folder.owner?.name || 'Unknown',
         owner_email: folder.owner?.email || '',
-        owner_role: folder.role?.name || folder.owner?.role?.name || 'Unknown',
+        owner_role: folder.role?.name ?? null,
         children: [],
       });
     });
@@ -869,20 +879,59 @@ export class FoldersService {
 
   public async getAccessibleFolderIds(user: User): Promise<string[]> {
     const activeRoleId = (user as any).active_role_id || user.role_id;
+    if (!activeRoleId) return [];
     const now = new Date();
 
-    const permissions = await this.permissionRepository
+    const activeRole = await this.roleRepository.findOne({ where: { id: activeRoleId } });
+
+    // 1. Workspace folders for the active role.
+    //    Private roles (Dosen/Tendik) are scoped to the owner — other users' private folders
+    //    must not appear even within the same role workspace.
+    const workspaceQuery = this.folderRepository
+      .createQueryBuilder('folder')
+      .select('folder.id', 'id')
+      .where('folder.role_id = :activeRoleId', { activeRoleId })
+      .andWhere('folder.deleted_at IS NULL');
+    if (activeRole?.is_private) {
+      workspaceQuery.andWhere('folder.owner_id = :userId', { userId: user.id });
+    }
+    const workspaceFolders = await workspaceQuery.getRawMany();
+
+    // 2. Role-based shared folders: grants issued to the entire active role group,
+    //    pointing at folders in a different workspace.  Private-workspace folders are
+    //    excluded even if they somehow have a cross-role permission record.
+    const roleSharedPerms = await this.permissionRepository
       .createQueryBuilder('fp')
+      .innerJoin('folders', 'f2', 'f2.id = fp.folder_id AND f2.deleted_at IS NULL')
+      .leftJoin('roles', 'r2', 'r2.id = f2.role_id')
       .select('fp.folder_id', 'folder_id')
-      .where('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
-      .andWhere(
-        '(fp.user_id = :userId OR fp.role_id = :roleId)',
-        { userId: user.id, roleId: activeRoleId },
-      )
+      .where('fp.role_id = :activeRoleId', { activeRoleId })
+      .andWhere('fp.user_id IS NULL')
+      .andWhere('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .andWhere('f2.role_id != :activeRoleId', { activeRoleId })
+      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
       .getRawMany();
 
-    return permissions.map((p) => p.folder_id);
+    // 3. User-specific shared folders: personal grants scoped to the active role
+    //    (or role-agnostic grants with role_id IS NULL).  Same private guard applied.
+    const userSharedPerms = await this.permissionRepository
+      .createQueryBuilder('fp')
+      .innerJoin('folders', 'f2', 'f2.id = fp.folder_id AND f2.deleted_at IS NULL')
+      .leftJoin('roles', 'r2', 'r2.id = f2.role_id')
+      .select('fp.folder_id', 'folder_id')
+      .where('fp.user_id = :userId', { userId: user.id })
+      .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
+      .andWhere('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
+      .getRawMany();
+
+    return Array.from(new Set([
+      ...workspaceFolders.map((f) => f.id),
+      ...roleSharedPerms.map((p) => p.folder_id),
+      ...userSharedPerms.map((p) => p.folder_id),
+    ]));
   }
 
   async checkPermission(
@@ -910,13 +959,15 @@ export class FoldersService {
 
     if (!folder) return false;
 
-    // Folder owner always has full access regardless of permission records.
-    if (folder.owner_id === userId) return true;
+    // Private-role folders are bound to the exact (user, role) combination at creation.
+    // Only the owner, operating under the folder's own role, may access it.
+    // This prevents the owner from accessing their own private folder via a different role.
+    if (folder.role?.is_private) {
+      return folder.owner_id === userId && roleId === folder.role_id;
+    }
 
-    // Private workspace folder: deny all non-owner access.
-    // Role-level permission records would otherwise match for any user with the same role,
-    // breaking the per-user isolation that is the whole point of Workspace Pribadi.
-    if (folder.role?.is_private) return false;
+    // Non-private: folder owner always has full access regardless of permission records.
+    if (folder.owner_id === userId) return true;
 
     if (permissions.length === 0) {
       // No direct permission — check if user inherits access from an ancestor folder

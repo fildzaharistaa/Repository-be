@@ -37,6 +37,8 @@ export class FilesController {
     private readonly settingsService: SettingsService,
   ) {}
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('file.upload')
   @Post('upload/:folderId')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -155,10 +157,17 @@ export class FilesController {
     return this.filesService.rename(id, updateFileDto.name, req.user);
   }
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('file.delete')
   @Delete(':id')
   async remove(@Param('id') id: string, @Request() req: RequestWithUser) {
     await this.filesService.remove(id, req.user);
     return { message: 'File deleted successfully' };
+  }
+
+  @Post(':id/access')
+  async recordAccess(@Param('id') id: string, @Request() req: RequestWithUser) {
+    return this.filesService.recordAccess(id, req.user);
   }
 }
 

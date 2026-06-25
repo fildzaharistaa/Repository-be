@@ -5,14 +5,17 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, ILike, IsNull } from 'typeorm';
-import { File, Folder, User, SystemSetting, AccessRequest } from '../entities';
+import { File, Folder, User, SystemSetting, AccessRequest, FileAccessLog } from '../entities';
 import { FoldersService } from '../folders/folders.service';
+import { canShareOrModifyFile } from '../common/utils/file-access';
 
 @Injectable()
 export class FilesService {
   constructor(
     @InjectRepository(File)
     private fileRepository: Repository<File>,
+    @InjectRepository(FileAccessLog)
+    private accessLogRepo: Repository<FileAccessLog>,
     @InjectRepository(Folder)
     private folderRepository: Repository<Folder>,
     @InjectRepository(SystemSetting)
@@ -33,9 +36,13 @@ export class FilesService {
     const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
 
     if (isDosenOrTendik && file.owner_id !== user.id) {
-      // Bypass isolation when accessing a shared folder (folder not owned by this user)
+      // Bypass isolation when accessing a shared folder context.
+      // A folder is "shared" if: (a) the user doesn't own it, OR (b) the user owns it
+      // but created it under a different role than they are currently operating under.
+      // Case (b) covers multi-role users (e.g. Bambang-Dosen viewing his own WD2 folder).
+      const activeRoleId = (user as any).active_role_id || user.role_id;
       const folder = await this.folderRepository.findOne({ where: { id: file.folder_id } });
-      if (folder && folder.owner_id !== user.id) {
+      if (folder && (folder.owner_id !== user.id || folder.role_id !== activeRoleId)) {
         return; // Shared folder context — all files are visible to users with folder access
       }
 
@@ -131,7 +138,7 @@ export class FilesService {
     return this.fileRepository.save(fileEntity);
   }
 
-  async findAll(folderId: string, user: User): Promise<File[]> {
+  async findAll(folderId: string, user: User): Promise<any[]> {
     const folder = await this.folderRepository.findOne({
       where: { id: folderId },
     });
@@ -162,9 +169,12 @@ export class FilesService {
     const isDosenOrTendik = activeRoleName.includes('dosen') || activeRoleName.includes('tendik');
 
     const whereCondition: any = { folder_id: folderId };
-    // Apply ownership isolation only in the user's own folder.
-    // Shared folders (owned by someone else) show all files to anyone with folder access.
-    const isOwnFolder = folder.owner_id === user.id;
+    // Apply ownership isolation only when the folder truly belongs to the user in their
+    // current role context. A multi-role user (e.g. Bambang who is both WD2 and Dosen)
+    // may own a folder they created under a different role. When they access it via the
+    // Dosen role (because it was shared with Dosen), it must be treated as a shared folder
+    // so that files uploaded by others (e.g. Abi) remain visible.
+    const isOwnFolder = folder.owner_id === user.id && folder.role_id === activeRoleId;
     if (isDosenOrTendik && isOwnFolder) {
       whereCondition.owner_id = user.id;
     }
@@ -192,6 +202,21 @@ export class FilesService {
       downloadableIds = new Set(ars.map(ar => ar.file.id));
     }
 
+    // Batch-fetch last_accessed_at per (file, user, role) — single query, no N+1
+    const accessMap = new Map<string, Date>();
+    if (files.length > 0) {
+      const logs = await this.accessLogRepo.find({
+        where: {
+          file_id: In(files.map(f => f.id)),
+          user_id: user.id,
+          role_id: activeRoleId,
+        },
+      });
+      for (const log of logs) {
+        accessMap.set(log.file_id, log.last_accessed_at);
+      }
+    }
+
     return files.map(f => ({
       ...f,
       uploaded_by: f.owner?.name ?? null,
@@ -199,10 +224,13 @@ export class FilesService {
       // Do NOT fall back to owner.role.name — that is the uploader's CURRENT primary role
       // which is wrong for multi-role users who uploaded under a different active role.
       uploaded_by_role: (f as any).uploaded_by_role?.name ?? null,
+      uploaded_by_role_id: (f as any).uploaded_by_role_id ?? null,
+      folder_owner_id: folder.owner_id ?? null,
       owner_name: f.owner?.name ?? null,
       owner_email: (f.owner as any)?.email ?? null,
-      owner_role: (f as any).uploaded_by_role?.name ?? f.owner?.role?.name ?? null,
+      owner_role: (f as any).uploaded_by_role?.name ?? null,
       can_download: f.owner_id === user.id ? true : downloadableIds.has(f.id),
+      last_accessed_at: accessMap.get(f.id)?.toISOString() ?? null,
     }));
   }
 
@@ -337,7 +365,7 @@ export class FilesService {
   async rename(id: string, name: string, user: User): Promise<File> {
     const file = await this.fileRepository.findOne({
       where: { id },
-      relations: ['folder'],
+      relations: ['folder', 'folder.owner', 'uploaded_by_role'],
     });
 
     if (!file) {
@@ -360,7 +388,12 @@ export class FilesService {
       );
     }
 
-    await this.verifyOwnershipIfRestricted(file, user);
+    const allowed = await canShareOrModifyFile(file as any, user as any);
+    if (!allowed) {
+      throw new ForbiddenException(
+        'Anda tidak berhak mengubah nama file ini',
+      );
+    }
 
     file.name = name;
     return this.fileRepository.save(file);
@@ -651,6 +684,43 @@ export class FilesService {
       targetFolderIds: [...targetFolderIdSet],
       totalFilesInMatchingFolders: fileCount,
     };
+  }
+
+  async recordAccess(fileId: string, user: User): Promise<{ last_accessed_at: string }> {
+    const file = await this.fileRepository.findOne({ where: { id: fileId }, relations: ['folder'] });
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    const activeRoleId = (user as any).active_role_id || user.role_id;
+
+    const hasPermission = await this.foldersService.checkPermission(
+      user.id,
+      activeRoleId,
+      file.folder_id,
+      'read',
+    );
+    if (!hasPermission) {
+      throw new ForbiddenException('You do not have read permission for this file');
+    }
+
+    const now = new Date();
+    let log = await this.accessLogRepo.findOne({
+      where: { file_id: fileId, user_id: user.id, role_id: activeRoleId },
+    });
+    if (log) {
+      log.last_accessed_at = now;
+    } else {
+      log = this.accessLogRepo.create({
+        file_id: fileId,
+        user_id: user.id,
+        role_id: activeRoleId,
+        last_accessed_at: now,
+      });
+    }
+    await this.accessLogRepo.save(log);
+
+    return { last_accessed_at: now.toISOString() };
   }
 }
 
