@@ -64,4 +64,4 @@ import { IntegrationModule } from './integration/integration.module';
     },
   ],
 })
-export class AppModule {} 
+export class AppModule {}
