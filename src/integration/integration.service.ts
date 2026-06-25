@@ -52,15 +52,19 @@ export class IntegrationService {
       .leftJoinAndSelect('file.owner', 'owner')
       .where('file.deleted_at IS NULL');
 
-    // Cari berdasarkan nama folder (nama indikator)
-    if (nama) {
+    // Folder di repository dinamai berdasarkan kode (misal "2.1.1.1").
+    // Cari dengan OR: cocokkan kode ATAU nama, supaya fleksibel.
+    if (kode && nama) {
+      qb.andWhere(
+        '(folder.name ILIKE :kode OR folder.name ILIKE :nama)',
+        { kode: `%${kode}%`, nama: `%${nama}%` },
+      );
+    } else if (kode) {
+      qb.andWhere('folder.name ILIKE :kode', { kode: `%${kode}%` });
+    } else if (nama) {
       qb.andWhere('folder.name ILIKE :nama', { nama: `%${nama}%` });
     }
-    // Atau fallback ke kode jika nama tidak ada
-    if (!nama && kode) {
-      qb.andWhere('folder.name ILIKE :kode', { kode: `%${kode}%` });
-    }
-    // Filter by owner email
+
     if (email) {
       qb.andWhere('LOWER(owner.email) = LOWER(:email)', { email });
     }
@@ -81,10 +85,15 @@ export class IntegrationService {
       .leftJoinAndSelect('file.owner', 'owner')
       .where('file.deleted_at IS NULL');
 
-    if (nama) {
-      qb.andWhere('folder.name ILIKE :nama', { nama: `%${nama}%` });
+    if (kode && nama) {
+      qb.andWhere(
+        '(folder.name ILIKE :kode OR folder.name ILIKE :nama)',
+        { kode: `%${kode}%`, nama: `%${nama}%` },
+      );
     } else if (kode) {
       qb.andWhere('folder.name ILIKE :kode', { kode: `%${kode}%` });
+    } else if (nama) {
+      qb.andWhere('folder.name ILIKE :nama', { nama: `%${nama}%` });
     }
 
     const files = await qb.getMany();
