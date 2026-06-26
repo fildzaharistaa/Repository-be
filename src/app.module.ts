@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -13,7 +12,6 @@ import { FilesModule } from './files/files.module';
 import { PermissionsModule } from './permissions/permissions.module';
 import { AccessRequestsModule } from './access-requests/access-requests.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
-import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
 import { SearchModule } from './search/search.module';
 import { StatsModule } from './stats/stats.module';
@@ -22,19 +20,15 @@ import { SettingsModule } from './settings/settings.module';
 import { CronModule } from './cron/cron.module';
 import { SuperAdminModule } from './super-admin/super-admin.module';
 import { ShareLinksModule } from './share-links/share-links.module';
+import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [databaseConfig, jwtConfig],
+      load: [jwtConfig],
     }),
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) =>
-        configService.get<TypeOrmModuleOptions>('database')!,
-      inject: [ConfigService],
-    }),
+    PrismaModule,
     AuthModule,
     UsersModule,
     RolesModule,

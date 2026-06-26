@@ -1,7 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
-import { UserRole, UserRoleStatus, Role, RolePermission } from '../../entities';
+import { PrismaService } from '../../prisma/prisma.service';
 
 const TTL_MS = 60_000;
 
@@ -11,26 +9,11 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-/**
- * In-memory TTL cache for effective permissions per (userId, activeRoleId).
- * Invalidated explicitly by services on assign/remove/suspend/reactivate.
- *
- * Wildcards:
- *  - role.is_admin = true  → effective Set has '*'
- *  - permission slug 'module.*' → matches any action under that module
- */
 @Injectable()
 export class PermissionCacheService {
   private cache = new Map<string, CacheEntry>();
 
-  constructor(
-    @InjectRepository(UserRole)
-    private readonly userRoleRepo: Repository<UserRole>,
-    @InjectRepository(Role)
-    private readonly roleRepo: Repository<Role>,
-    @InjectRepository(RolePermission)
-    private readonly rolePermissionRepo: Repository<RolePermission>,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   private key(userId: string, activeRoleId: string | null | undefined) {
     return `${userId}::${activeRoleId ?? 'primary'}`;
@@ -42,8 +25,7 @@ export class PermissionCacheService {
     }
   }
 
-  invalidateRole(roleId: string) {
-    // permission set of a role changed → blow whole cache (cheap, low scale)
+  invalidateRole(_roleId: string) {
     this.cache.clear();
   }
 
@@ -61,41 +43,26 @@ export class PermissionCacheService {
       return { slugs: cached.slugs, isWildcard: cached.isWildcard };
     }
 
-    // Determine which UserRole(s) drive the active permission set.
-    // If activeRoleId provided → use that one (must be ACTIVE).
-    // Else → use ACTIVE primary; fallback to any ACTIVE.
-    let userRoles: UserRole[];
+    let userRoles: any[];
     if (activeRoleId) {
-      userRoles = await this.userRoleRepo.find({
-        where: {
-          user_id: userId,
-          role_id: activeRoleId,
-          status: UserRoleStatus.ACTIVE,
-          deleted_at: IsNull(),
-        },
-        relations: ['role'],
+      userRoles = await this.prisma.user_roles.findMany({
+        where: { user_id: userId, role_id: activeRoleId, status: 'ACTIVE', deleted_at: null },
+        include: { roles: true },
       });
     } else {
-      userRoles = await this.userRoleRepo.find({
-        where: {
-          user_id: userId,
-          status: UserRoleStatus.ACTIVE,
-          deleted_at: IsNull(),
-        },
-        relations: ['role'],
-        order: { is_primary: 'DESC', assigned_at: 'ASC' },
+      userRoles = await this.prisma.user_roles.findMany({
+        where: { user_id: userId, status: 'ACTIVE', deleted_at: null },
+        include: { roles: true },
+        orderBy: [{ is_primary: 'desc' }, { assigned_at: 'asc' }],
       });
     }
 
     if (!userRoles.length) {
-      // No active UserRole junction record (e.g. legacy user not backfilled).
-      // Fall back to legacy single role for backwards compatibility.
-      const role = await this.roleRepo
-        .createQueryBuilder('r')
-        .innerJoin('users', 'u', 'u.role_id = r.id')
-        .where('u.id = :userId', { userId })
-        .andWhere('r.is_active = true')
-        .getOne();
+      const user = await this.prisma.users.findUnique({
+        where: { id: userId },
+        include: { roles: true },
+      });
+      const role = user?.roles?.is_active ? user.roles : null;
       if (role) {
         const result = await this.collectForRoles([role]);
         this.store(cacheKey, result);
@@ -106,30 +73,30 @@ export class PermissionCacheService {
       return empty;
     }
 
-    const roles = userRoles.map((ur) => ur.role).filter((r) => r && r.is_active);
+    const roles = userRoles.map((ur) => ur.roles).filter((r: any) => r && r.is_active);
     const result = await this.collectForRoles(roles);
     this.store(cacheKey, result);
     return result;
   }
 
-  private async collectForRoles(roles: Role[]) {
-    if (roles.some((r) => r.is_admin)) {
+  private async collectForRoles(roles: any[]) {
+    if (roles.some((r: any) => r.is_admin)) {
       return { slugs: new Set<string>(['*']), isWildcard: true };
     }
-    const roleIds = roles.map((r) => r.id);
+    const roleIds = roles.map((r: any) => r.id);
     if (!roleIds.length) {
       return { slugs: new Set<string>(), isWildcard: false };
     }
-    const rows = await this.rolePermissionRepo
-      .createQueryBuilder('rp')
-      .innerJoinAndSelect('rp.permission', 'p')
-      .where('rp.role_id IN (:...roleIds)', { roleIds })
-      .andWhere('p.is_active = true')
-      .andWhere('p.deleted_at IS NULL')
-      .getMany();
+    const rows = await this.prisma.role_permissions.findMany({
+      where: {
+        role_id: { in: roleIds },
+        permissions: { is_active: true, deleted_at: null },
+      },
+      include: { permissions: true },
+    });
     const slugs = new Set<string>();
     for (const rp of rows) {
-      if (rp.permission?.slug) slugs.add(rp.permission.slug);
+      if (rp.permissions?.slug) slugs.add(rp.permissions.slug);
     }
     return { slugs, isWildcard: false };
   }
@@ -142,10 +109,6 @@ export class PermissionCacheService {
     });
   }
 
-  /**
-   * Check whether the effective set satisfies a required slug.
-   * Supports wildcards: '*' (super admin) and 'module.*' (full module).
-   */
   hasSlug(effective: Set<string>, required: string): boolean {
     if (effective.has('*')) return true;
     if (effective.has(required)) return true;

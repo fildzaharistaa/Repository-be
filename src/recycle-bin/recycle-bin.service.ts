@@ -1,192 +1,126 @@
-import {
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, IsNull } from 'typeorm';
-import { File } from '../entities/file.entity';
-import { Folder } from '../entities/folder.entity';
-import { FolderPermission } from '../entities/folder-permission.entity';
-import { AccessRequest } from '../access-requests/access-request.entity';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class RecycleBinService {
-  constructor(
-    @InjectRepository(File)
-    private fileRepository: Repository<File>,
-    @InjectRepository(Folder)
-    private folderRepository: Repository<Folder>,
-    @InjectRepository(FolderPermission)
-    private folderPermissionRepository: Repository<FolderPermission>,
-    @InjectRepository(AccessRequest)
-    private accessRequestRepository: Repository<AccessRequest>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
-  /**
-   * Get all trashed items (top-level only).
-   * For folders: only show folders whose parent is NOT also deleted.
-   * For files: only show files whose parent folder is NOT deleted.
-   */
   async findAllTrashed(userId: string, isAdmin: boolean) {
-    const findConditions = isAdmin ? {} : { owner_id: userId };
+    const ownerFilter = isAdmin ? {} : { owner_id: userId };
 
-    // Get all soft-deleted files
-    const allDeletedFiles = await this.fileRepository.find({
-      withDeleted: true,
-      where: { ...findConditions, deleted_at: Not(IsNull()) },
-      relations: ['folder'],
-      order: { deleted_at: 'DESC' },
+    const allDeletedFiles = await this.prisma.files.findMany({
+      where: { ...ownerFilter, deleted_at: { not: null } },
+      include: { folders: true },
+      orderBy: { deleted_at: 'desc' },
     });
 
-    // Get all soft-deleted folders
-    const allDeletedFolders = await this.folderRepository.find({
-      withDeleted: true,
-      where: { ...findConditions, deleted_at: Not(IsNull()) },
-      order: { deleted_at: 'DESC' },
+    const allDeletedFolders = await this.prisma.folders.findMany({
+      where: { ...ownerFilter, deleted_at: { not: null } },
+      orderBy: { deleted_at: 'desc' },
     });
 
-    const deletedFolderIds = new Set(allDeletedFolders.map(f => f.id));
+    const deletedFolderIds = new Set(allDeletedFolders.map((f) => f.id));
 
-    // Top-level deleted folders: parent is not also deleted
-    const topLevelFolders = allDeletedFolders.filter(folder => {
+    const topLevelFolders = allDeletedFolders.filter((folder) => {
       if (!folder.parent_id) return true;
       return !deletedFolderIds.has(folder.parent_id);
     });
 
-    // Top-level deleted files: parent folder is NOT deleted
-    const topLevelFiles = allDeletedFiles.filter(file => {
+    const topLevelFiles = allDeletedFiles.filter((file) => {
       return !deletedFolderIds.has(file.folder_id);
     });
 
     return {
-      folders: topLevelFolders.map(f => ({
+      folders: topLevelFolders.map((f) => ({
         id: f.id,
         name: f.name,
         type: 'folder' as const,
         deleted_at: f.deleted_at,
         parent_id: f.parent_id,
       })),
-      files: topLevelFiles.map(f => ({
+      files: topLevelFiles.map((f) => ({
         id: f.id,
         name: f.name,
         type: 'file' as const,
         mime_type: f.mime_type,
-        size: f.size,
+        size: Number(f.size),
         deleted_at: f.deleted_at,
         folder_id: f.folder_id,
       })),
     };
   }
 
-  /**
-   * Restore a file from recycle bin
-   */
   async restoreFile(id: string): Promise<void> {
-    const file = await this.fileRepository.findOne({
-      withDeleted: true,
-      where: { id, deleted_at: Not(IsNull()) },
+    const file = await this.prisma.files.findFirst({
+      where: { id, deleted_at: { not: null } },
     });
 
-    if (!file) {
-      throw new NotFoundException('Deleted file not found');
-    }
+    if (!file) throw new NotFoundException('Deleted file not found');
 
-    await this.fileRepository.recover(file);
+    await this.prisma.files.update({
+      where: { id },
+      data: { deleted_at: null },
+    });
   }
 
-  /**
-   * Restore a folder and all its children (subfolders + files) recursively
-   */
   async restoreFolder(id: string): Promise<void> {
-    const folder = await this.folderRepository.findOne({
-      withDeleted: true,
-      where: { id, deleted_at: Not(IsNull()) },
+    const folder = await this.prisma.folders.findFirst({
+      where: { id, deleted_at: { not: null } },
     });
 
-    if (!folder) {
-      throw new NotFoundException('Deleted folder not found');
-    }
+    if (!folder) throw new NotFoundException('Deleted folder not found');
 
-    // Restore the folder first
-    await this.folderRepository.recover(folder);
-
-    // Cascading restore: restore all files in this folder
-    const deletedFiles = await this.fileRepository.find({
-      withDeleted: true,
-      where: { folder_id: id, deleted_at: Not(IsNull()) },
+    await this.prisma.folders.update({
+      where: { id },
+      data: { deleted_at: null },
     });
-    if (deletedFiles.length > 0) {
-      await this.fileRepository.recover(deletedFiles);
-    }
 
-    // Cascading restore: restore all child folders recursively
-    const deletedChildren = await this.folderRepository.find({
-      withDeleted: true,
-      where: { parent_id: id, deleted_at: Not(IsNull()) },
+    await this.prisma.files.updateMany({
+      where: { folder_id: id, deleted_at: { not: null } },
+      data: { deleted_at: null },
+    });
+
+    const deletedChildren = await this.prisma.folders.findMany({
+      where: { parent_id: id, deleted_at: { not: null } },
     });
     for (const child of deletedChildren) {
       await this.restoreFolder(child.id);
     }
   }
 
-  /**
-   * Permanently delete a file
-   */
   async permanentDeleteFile(id: string): Promise<void> {
-    const file = await this.fileRepository.findOne({
-      withDeleted: true,
-      where: { id, deleted_at: Not(IsNull()) },
+    const file = await this.prisma.files.findFirst({
+      where: { id, deleted_at: { not: null } },
     });
 
-    if (!file) {
-      throw new NotFoundException('Deleted file not found');
-    }
+    if (!file) throw new NotFoundException('Deleted file not found');
 
-    // Clean up dependent foreign-key records first
-    await this.accessRequestRepository.delete({ file: { id } });
-
-    await this.fileRepository.remove(file);
+    await this.prisma.access_requests.deleteMany({ where: { fileId: id } });
+    await this.prisma.files.delete({ where: { id } });
   }
 
-  /**
-   * Permanently delete a folder and all its children recursively
-   */
   async permanentDeleteFolder(id: string): Promise<void> {
-    const folder = await this.folderRepository.findOne({
-      withDeleted: true,
-      where: { id, deleted_at: Not(IsNull()) },
+    const folder = await this.prisma.folders.findFirst({
+      where: { id, deleted_at: { not: null } },
     });
 
-    if (!folder) {
-      throw new NotFoundException('Deleted folder not found');
-    }
+    if (!folder) throw new NotFoundException('Deleted folder not found');
 
-    // Cascade: permanently delete all files in this folder
-    const files = await this.fileRepository.find({
-      withDeleted: true,
-      where: { folder_id: id },
-    });
+    const files = await this.prisma.files.findMany({ where: { folder_id: id } });
     if (files.length > 0) {
       for (const f of files) {
-        await this.accessRequestRepository.delete({ file: { id: f.id } });
+        await this.prisma.access_requests.deleteMany({ where: { fileId: f.id } });
       }
-      await this.fileRepository.remove(files);
+      await this.prisma.files.deleteMany({ where: { folder_id: id } });
     }
 
-    // Cascade: permanently delete all child folders recursively
-    const children = await this.folderRepository.find({
-      withDeleted: true,
-      where: { parent_id: id },
-    });
+    const children = await this.prisma.folders.findMany({ where: { parent_id: id } });
     for (const child of children) {
       await this.permanentDeleteFolder(child.id);
     }
 
-    // Clean up dependent foreign-key records for this folder
-    await this.accessRequestRepository.delete({ folder: { id } });
-    await this.folderPermissionRepository.delete({ folder_id: id });
-
-    // Finally delete the folder itself
-    await this.folderRepository.remove(folder);
+    await this.prisma.access_requests.deleteMany({ where: { folderId: id } });
+    await this.prisma.folder_permissions.deleteMany({ where: { folder_id: id } });
+    await this.prisma.folders.delete({ where: { id } });
   }
 }

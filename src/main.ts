@@ -1,7 +1,10 @@
 // Trigger restart: 2026-05-01T21:27:00
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+
+(BigInt.prototype as any).toJSON = function () { return Number(this); };
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);

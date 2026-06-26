@@ -5,10 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { FolderPermission } from '../../entities/folder-permission.entity';
-import { Folder } from '../../entities/folder.entity';
+import { PrismaService } from '../../prisma/prisma.service';
 import { RequestWithUser } from '../interfaces/request-with-user.interface';
 
 export enum PermissionType {
@@ -22,12 +19,7 @@ export enum PermissionType {
 export class FolderPermissionGuard implements CanActivate {
   constructor(
     private reflector: Reflector,
-
-    @InjectRepository(FolderPermission)
-    private permissionRepository: Repository<FolderPermission>,
-
-    @InjectRepository(Folder)
-    private folderRepository: Repository<Folder>,
+    private prisma: PrismaService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -79,9 +71,9 @@ export class FolderPermissionGuard implements CanActivate {
   ): Promise<boolean> {
     const now = new Date();
 
-    const folder = await this.folderRepository.findOne({
+    const folder = await this.prisma.folders.findUnique({
       where: { id: folderId },
-      relations: ['owner', 'role'],
+      include: { users: true, roles: true },
     });
 
     if (!folder) {
@@ -90,14 +82,14 @@ export class FolderPermissionGuard implements CanActivate {
 
     // The folder owner may always manage their own folder regardless of which role
     // they are currently operating under. This only covers the owner themselves.
-    if (folder.owner?.id === userId) {
+    if (folder.owner_id === userId) {
       return true;
     }
 
     // Private workspace folder: only the owner (already returned above) may access it.
     // Without this check, the workspace-role match below would grant every same-role
     // member full access to another user's Workspace Pribadi folder.
-    if (folder.role?.is_private && folder.owner_id !== userId) {
+    if (folder.roles?.is_private && folder.owner_id !== userId) {
       return false;
     }
 
@@ -111,12 +103,15 @@ export class FolderPermissionGuard implements CanActivate {
     }
 
     // cek permission table (both user-level and role-level)
-    const permissions = await this.permissionRepository
-      .createQueryBuilder('fp')
-      .where('fp.folder_id = :folderId', { folderId })
-      .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
-      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .getMany();
+    const permissions = await this.prisma.folder_permissions.findMany({
+      where: {
+        folder_id: folderId,
+        AND: [
+          { OR: [{ user_id: userId }, { role_id: roleId }] },
+          { OR: [{ expires_at: null }, { expires_at: { gt: now } }] },
+        ],
+      },
+    });
 
     if (permissions.length === 0) {
       // No direct permission: check if any ancestor folder grants access.
@@ -147,7 +142,7 @@ export class FolderPermissionGuard implements CanActivate {
   }
 
   private async checkAncestorPermissions(
-    folder: Folder,
+    folder: any,
     userId: string,
     roleId: string,
     permissionType: PermissionType,
@@ -157,20 +152,23 @@ export class FolderPermissionGuard implements CanActivate {
     let parentId = folder.parent_id;
     while (parentId && ancestorIds.length < 5) {
       ancestorIds.push(parentId);
-      const parent = await this.folderRepository.findOne({
+      const parent = await this.prisma.folders.findUnique({
         where: { id: parentId },
-        select: ['id', 'parent_id'],
+        select: { id: true, parent_id: true },
       });
       parentId = parent?.parent_id ?? null;
     }
     if (!ancestorIds.length) return false;
 
-    const perms = await this.permissionRepository
-      .createQueryBuilder('fp')
-      .where('fp.folder_id IN (:...folderIds)', { folderIds: ancestorIds })
-      .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
-      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .getMany();
+    const perms = await this.prisma.folder_permissions.findMany({
+      where: {
+        folder_id: { in: ancestorIds },
+        AND: [
+          { OR: [{ user_id: userId }, { role_id: roleId }] },
+          { OR: [{ expires_at: null }, { expires_at: { gt: now } }] },
+        ],
+      },
+    });
 
     return perms.some(p => {
       switch (permissionType) {

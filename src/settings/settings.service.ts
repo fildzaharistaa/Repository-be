@@ -1,7 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { SystemSetting, User, Role } from '../entities';
+import { PrismaService } from '../prisma/prisma.service';
+import { system_settings } from '@prisma/client';
 
 const MIN_FOLDER_DEPTH = 5;
 const MAX_STORAGE_PER_USER = 104857600; // 100 MB in bytes
@@ -9,18 +8,8 @@ const DEFAULT_MAX_UPLOAD_SIZE = 5242880; // 5 MB in bytes
 
 @Injectable()
 export class SettingsService {
-  constructor(
-    @InjectRepository(SystemSetting)
-    private settingRepo: Repository<SystemSetting>,
-    @InjectRepository(User)
-    private userRepo: Repository<User>,
-    @InjectRepository(Role)
-    private roleRepo: Repository<Role>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
-  /**
-   * Seed default settings if they don't exist yet
-   */
   async seedDefaults(): Promise<void> {
     const defaults: { key: string; value: string }[] = [
       { key: 'max_folder_depth', value: String(MIN_FOLDER_DEPTH) },
@@ -29,15 +18,16 @@ export class SettingsService {
     ];
 
     for (const d of defaults) {
-      const existing = await this.settingRepo.findOne({ where: { key: d.key } });
-      if (!existing) {
-        await this.settingRepo.save(d);
-      }
+      await this.prisma.system_settings.upsert({
+        where: { key: d.key },
+        create: { key: d.key, value: d.value },
+        update: {},
+      });
     }
   }
 
   async getAll(): Promise<Record<string, string>> {
-    const settings = await this.settingRepo.find();
+    const settings = await this.prisma.system_settings.findMany();
     const result: Record<string, string> = {};
     for (const s of settings) {
       result[s.key] = s.value;
@@ -46,12 +36,11 @@ export class SettingsService {
   }
 
   async get(key: string): Promise<string | null> {
-    const setting = await this.settingRepo.findOne({ where: { key } });
+    const setting = await this.prisma.system_settings.findUnique({ where: { key } });
     return setting?.value ?? null;
   }
 
-  async update(key: string, value: string): Promise<SystemSetting> {
-    // Validate max_folder_depth: cannot go below MIN_FOLDER_DEPTH
+  async update(key: string, value: string): Promise<system_settings> {
     if (key === 'max_folder_depth') {
       const numValue = parseInt(value, 10);
       if (isNaN(numValue) || numValue < MIN_FOLDER_DEPTH) {
@@ -70,18 +59,15 @@ export class SettingsService {
       }
     }
 
-    let setting = await this.settingRepo.findOne({ where: { key } });
-    if (!setting) {
-      setting = this.settingRepo.create({ key, value });
-    } else {
-      setting.value = value;
-    }
-    await this.settingRepo.save(setting);
+    const setting = await this.prisma.system_settings.upsert({
+      where: { key },
+      create: { key, value },
+      update: { value },
+    });
 
-    // If we updated global depth, reset all per-user and per-role overrides
     if (key === 'max_folder_depth') {
-      await this.userRepo.query('UPDATE users SET max_folder_depth = NULL');
-      await this.roleRepo.query('UPDATE roles SET max_folder_depth = NULL');
+      await this.prisma.users.updateMany({ data: { max_folder_depth: null } });
+      await this.prisma.roles.updateMany({ data: { max_folder_depth: null } });
     }
 
     return setting;

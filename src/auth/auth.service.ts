@@ -4,58 +4,34 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
-import { User, Role } from '../entities';
+import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { JwtPayload } from '../common/interfaces/jwt-payload.interface';
 
 @Injectable()
 export class AuthService {
   constructor(
-    @InjectRepository(User)
-    private userRepository: Repository<User>,
-
-    @InjectRepository(Role)
-    private roleRepository: Repository<Role>,
-
+    private prisma: PrismaService,
     private jwtService: JwtService,
   ) {}
 
-  // =========================
-  // VALIDATE USER
-  // =========================
-  async validateUser(
-    email: string,
-    password: string,
-  ): Promise<User | null> {
-    const user = await this.userRepository.findOne({
+  async validateUser(email: string, password: string) {
+    const user = await this.prisma.users.findUnique({
       where: { email },
-      relations: ['role'],
+      include: { roles: true },
     });
 
-    if (!user) {
-      return null;
-    }
+    if (!user) return null;
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
-
-    if (!isPasswordValid) {
-      return null;
-    }
+    if (!isPasswordValid) return null;
 
     return user;
   }
 
-  // =========================
-  // LOGIN
-  // =========================
   async login(loginDto: LoginDto) {
-    const user = await this.validateUser(
-      loginDto.email,
-      loginDto.password,
-    );
+    const user = await this.validateUser(loginDto.email, loginDto.password);
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -64,7 +40,7 @@ export class AuthService {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
-      role: user.role?.name || '',
+      role: user.roles?.name || '',
       role_id: user.role_id || '',
       active_role_id: user.role_id || undefined,
     };
@@ -75,45 +51,35 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
+        role: user.roles,
       },
     };
   }
 
-  // =========================
-  // REGISTER
-  // =========================
   async register(data: any) {
     const { email, password, name, unit } = data;
 
-    const existingUser = await this.userRepository.findOne({
-      where: { email },
-    });
-
+    const existingUser = await this.prisma.users.findUnique({ where: { email } });
     if (existingUser) {
       throw new BadRequestException('Email already registered');
     }
 
-    // cari role berdasarkan unit
-    const role = await this.roleRepository.findOne({
-      where: { name: unit },
-    });
-
+    const role = await this.prisma.roles.findUnique({ where: { name: unit } });
     if (!role) {
       throw new BadRequestException('Role not found for this unit');
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newUser = this.userRepository.create({
-      email,
-      password: hashedPassword,
-      name,
-      unit,
-      role_id: role.id,
+    const savedUser = await this.prisma.users.create({
+      data: {
+        email,
+        password: hashedPassword,
+        name,
+        unit,
+        role_id: role.id,
+      },
     });
-
-    const savedUser = await this.userRepository.save(newUser);
 
     return {
       message: 'User registered successfully',

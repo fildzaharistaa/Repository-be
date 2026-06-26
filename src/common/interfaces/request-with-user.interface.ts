@@ -1,7 +1,12 @@
 import { Request } from 'express';
-import { User } from '../../entities';
 
 export interface RequestWithUser extends Request {
-  user: User;
+  user: {
+    id: string;
+    email?: string;
+    role_id: string;
+    role?: { name: string; is_private?: boolean; is_admin?: boolean };
+    active_role_id?: string;
+    active_role_name?: string;
+  };
 }
-

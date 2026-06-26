@@ -11,7 +11,6 @@ import {
   RequirePermissionsMode,
 } from '../decorators/require-permissions.decorator';
 import { PermissionCacheService } from '../../super-admin/shared/permission-cache.service';
-import { User } from '../../entities';
 
 /**
  * Action-level permission guard. Runs AFTER JwtAuthGuard.
@@ -41,7 +40,7 @@ export class PermissionsGuard implements CanActivate {
       ) || 'all';
 
     const request = context.switchToHttp().getRequest();
-    const user: User | undefined = request.user;
+    const user = request.user as any;
     if (!user) throw new ForbiddenException('Not authenticated');
 
     // active_role_id can be present on the JWT payload (set via /users/switch-role)

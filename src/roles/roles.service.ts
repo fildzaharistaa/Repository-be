@@ -1,23 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Role } from '../entities';
+import { PrismaService } from '../prisma/prisma.service';
+import { roles } from '@prisma/client';
 
 @Injectable()
 export class RolesService {
-  constructor(
-    @InjectRepository(Role)
-    private roleRepository: Repository<Role>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
-  async findAll(): Promise<Role[]> {
-    return this.roleRepository.find({
-      order: { name: 'ASC' },
+  async findAll(): Promise<roles[]> {
+    return this.prisma.roles.findMany({
+      orderBy: { name: 'asc' },
     });
   }
 
-  async findOne(id: string): Promise<Role> {
-    const role = await this.roleRepository.findOne({
+  async findOne(id: string): Promise<roles> {
+    const role = await this.prisma.roles.findUnique({
       where: { id },
     });
 
@@ -28,14 +24,17 @@ export class RolesService {
     return role;
   }
 
-  async findByName(name: string): Promise<Role | null> {
-    return this.roleRepository.findOne({
+  async findByName(name: string): Promise<roles | null> {
+    return this.prisma.roles.findUnique({
       where: { name },
     });
   }
+
   async updateRoleDepth(roleIds: string[], maxDepth: number): Promise<void> {
     if (roleIds.length === 0) return;
-    await this.roleRepository.update(roleIds, { max_folder_depth: maxDepth });
+    await this.prisma.roles.updateMany({
+      where: { id: { in: roleIds } },
+      data: { max_folder_depth: maxDepth },
+    });
   }
 }
-

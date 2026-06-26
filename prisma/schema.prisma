@@ -1,0 +1,257 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model access_requests {
+  id                                       Int      @id(map: "PK_f89e51c15e3dbea13aa248fe128") @default(autoincrement())
+  status                                   String   @default("pending") @db.VarChar
+  createdAt                                DateTime @default(now()) @db.Timestamp(6)
+  requesterId                              String?  @db.Uuid
+  folderId                                 String?  @db.Uuid
+  fileId                                   String?  @db.Uuid
+  ownerId                                  String?  @db.Uuid
+  message                                  String?  @db.VarChar(500)
+  response_message                         String?  @db.VarChar(500)
+  can_read                                 Boolean  @default(true)
+  can_create                               Boolean  @default(false)
+  can_update                               Boolean  @default(false)
+  can_delete                               Boolean  @default(false)
+  can_download                             Boolean  @default(false)
+  requested_depth                          Int?
+  request_type                             String   @default("access") @db.VarChar(30)
+  folders                                  folders? @relation(fields: [folderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_056e8f03546ea9cc2b6cd1975df")
+  files                                    files?   @relation(fields: [fileId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_3085b2b1118fd4d073f94a61e94")
+  users_access_requests_requesterIdTousers users?   @relation("access_requests_requesterIdTousers", fields: [requesterId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_5cef6a18f13b6216066ffef8f56")
+  users_access_requests_ownerIdTousers     users?   @relation("access_requests_ownerIdTousers", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_e629f633d0cac3eae4dc2b484ac")
+}
+
+model audit_logs {
+  id         String   @id(map: "PK_1bb179d048bbc581caa3b013439") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id    String?  @db.Uuid
+  role_id    String?  @db.Uuid
+  action     String   @db.VarChar(100)
+  metadata   Json?
+  ip_address String?  @db.VarChar(50)
+  user_agent String?  @db.VarChar(255)
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  roles      roles?   @relation(fields: [role_id], references: [id], onUpdate: NoAction, map: "FK_079d1bb280b63a113a65bf02ce5")
+  users      users?   @relation(fields: [user_id], references: [id], onUpdate: NoAction, map: "FK_bd2726fd31b35443f2245b93ba0")
+}
+
+model file_access_logs {
+  id               String   @id(map: "PK_be1d3092396a30ffa25b0e9c7e8") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  file_id          String   @db.Uuid
+  user_id          String   @db.Uuid
+  role_id          String   @db.Uuid
+  last_accessed_at DateTime @db.Timestamp(6)
+  created_at       DateTime @default(now()) @db.Timestamp(6)
+
+  @@unique([file_id, user_id, role_id], map: "UQ_7cbb7a3ca27ff0f175471adf542")
+}
+
+model file_permissions {
+  id           String    @id(map: "PK_6cb2fa5224a046b162d8850d80c") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  file_id      String    @db.Uuid
+  user_id      String?   @db.Uuid
+  role_id      String?   @db.Uuid
+  can_read     Boolean   @default(false)
+  can_download Boolean   @default(false)
+  expires_at   DateTime? @db.Timestamp(6)
+  created_at   DateTime  @default(now()) @db.Timestamp(6)
+  updated_at   DateTime  @default(now()) @db.Timestamp(6)
+  roles        roles?    @relation(fields: [role_id], references: [id], onUpdate: NoAction, map: "FK_4e23225a714e79232fdafd36475")
+  files        files     @relation(fields: [file_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "FK_5d0281250752f4a5e758b3ee0f9")
+  users        users?    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "FK_f4d06cef76903608133d504c9ba")
+}
+
+model files {
+  id                  String             @id(map: "PK_6c16b9093a142e0e7613b04a3d9") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name                String             @db.VarChar(255)
+  path                String             @db.VarChar(500)
+  mime_type           String             @db.VarChar(100)
+  size                BigInt
+  folder_id           String             @db.Uuid
+  created_at          DateTime           @default(now()) @db.Timestamp(6)
+  updated_at          DateTime           @default(now()) @db.Timestamp(6)
+  deleted_at          DateTime?          @db.Timestamp(6)
+  owner_id            String?            @db.Uuid
+  last_accessed_at    DateTime           @default(now()) @db.Timestamp(6)
+  uploaded_by_role_id String?            @db.Uuid
+  access_requests     access_requests[]
+  file_permissions    file_permissions[]
+  folders             folders            @relation(fields: [folder_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_27bc84e6954d2fa309a4f61326f")
+  users               users?             @relation(fields: [owner_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_4bc1db1f4f34ec9415acd88afdb")
+  roles               roles?             @relation(fields: [uploaded_by_role_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_e966029b442f553bf9e34743a03")
+}
+
+model folder_permissions {
+  id           String    @id(map: "PK_5216c10e549279d3db6dd3bc404") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  folder_id    String    @db.Uuid
+  user_id      String?   @db.Uuid
+  role_id      String?   @db.Uuid
+  can_create   Boolean   @default(false)
+  can_read     Boolean   @default(false)
+  can_update   Boolean   @default(false)
+  can_delete   Boolean   @default(false)
+  can_download Boolean   @default(false)
+  expires_at   DateTime? @db.Timestamp(6)
+  created_at   DateTime  @default(now()) @db.Timestamp(6)
+  updated_at   DateTime  @default(now()) @db.Timestamp(6)
+  roles        roles?    @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_1706bf2f80f5aeea20acae49dbd")
+  folders      folders   @relation(fields: [folder_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_8e9f51fe0a3e344714fb10c4a56")
+  users        users?    @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_fa110b828d37ac56e4e96d44e8e")
+}
+
+model folders {
+  id                 String               @id(map: "PK_8578bd31b0e7f6d6c2480dbbca8") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name               String               @db.VarChar(255)
+  parent_id          String?              @db.Uuid
+  unit               String?              @default("general") @db.VarChar(50)
+  owner_id           String?              @db.Uuid
+  created_at         DateTime             @default(now()) @db.Timestamp(6)
+  updated_at         DateTime             @default(now()) @db.Timestamp(6)
+  deleted_at         DateTime?            @db.Timestamp(6)
+  role_id            String?              @db.Uuid
+  access_requests    access_requests[]
+  files              files[]
+  folder_permissions folder_permissions[]
+  roles              roles?               @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_5cd492b333c337d0e3e415c239b")
+  folders            folders?             @relation("foldersTofolders", fields: [parent_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_938a930768697b6ece215667d8e")
+  other_folders      folders[]            @relation("foldersTofolders")
+  users              users?               @relation(fields: [owner_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_ecee72de3b100ef0bbebe47f3c4")
+}
+
+model permissions {
+  id               String             @id(map: "PK_920331560282b8bd21bb02290df") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  module           String             @db.VarChar(50)
+  action           String             @db.VarChar(50)
+  description      String?            @db.VarChar(500)
+  created_at       DateTime           @default(now()) @db.Timestamp(6)
+  updated_at       DateTime           @default(now()) @db.Timestamp(6)
+  slug             String             @unique(map: "UQ_d090ad82a0e97ce764c06c7b312") @db.VarChar(100)
+  submodule        String?            @db.VarChar(50)
+  name             String             @db.VarChar(150)
+  category         String?            @db.VarChar(50)
+  visibility       String             @default("internal") @db.VarChar(20)
+  is_system        Boolean            @default(false)
+  is_active        Boolean            @default(true)
+  created_by       String?            @db.Uuid
+  updated_by       String?            @db.Uuid
+  deleted_at       DateTime?          @db.Timestamp(6)
+  role_permissions role_permissions[]
+
+  @@index([module, action], map: "IDX_35ddf0f00aaedd9b4bd19f1f49")
+}
+
+model role_permissions {
+  id            String      @id(map: "PK_84059017c90bfcb701b8fa42297") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  role_id       String      @db.Uuid
+  permission_id String      @db.Uuid
+  granted_by    String?     @db.Uuid
+  granted_at    DateTime    @default(now()) @db.Timestamp(6)
+  permissions   permissions @relation(fields: [permission_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "FK_17022daf3f885f7d35423e9971e")
+  roles         roles       @relation(fields: [role_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "FK_178199805b901ccd220ab7740ec")
+
+  @@unique([role_id, permission_id], map: "uq_role_permission")
+  @@index([permission_id], map: "IDX_17022daf3f885f7d35423e9971")
+  @@index([role_id], map: "IDX_178199805b901ccd220ab7740e")
+}
+
+model roles {
+  id                 String               @id(map: "PK_c1433d71a4838793a49dcad46ab") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name               String               @unique(map: "UQ_648e3f5447f725579d7d4ffdfb7") @db.VarChar(50)
+  description        String?              @db.VarChar(255)
+  created_at         DateTime             @default(now()) @db.Timestamp(6)
+  updated_at         DateTime             @default(now()) @db.Timestamp(6)
+  max_folder_depth   Int?
+  is_admin           Boolean              @default(false)
+  is_active          Boolean              @default(true)
+  is_system          Boolean              @default(false)
+  hierarchy_level    Int                  @default(0)
+  category           String?              @db.VarChar(50)
+  color              String?              @db.VarChar(20)
+  created_by         String?              @db.Uuid
+  updated_by         String?              @db.Uuid
+  deleted_at         DateTime?            @db.Timestamp(6)
+  is_private         Boolean              @default(false)
+  audit_logs         audit_logs[]
+  file_permissions   file_permissions[]
+  files              files[]
+  folder_permissions folder_permissions[]
+  folders            folders[]
+  role_permissions   role_permissions[]
+  user_roles         user_roles[]
+  users              users[]
+}
+
+model share_links {
+  id             String    @id(map: "PK_70320b79ecd8acab96419fcdd6d") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  token          String    @unique(map: "UQ_9bc1c27d683c427cda047f23205") @db.VarChar(64)
+  item_type      String    @db.VarChar(10)
+  item_id        String    @db.Uuid
+  created_by     String    @db.Uuid
+  access_level   String    @default("anyone") @db.VarChar(20)
+  permission     String    @default("view") @db.VarChar(20)
+  expires_at     DateTime? @db.Timestamp(6)
+  is_active      Boolean   @default(true)
+  view_count     Int       @default(0)
+  download_count Int       @default(0)
+  created_at     DateTime  @default(now()) @db.Timestamp(6)
+  updated_at     DateTime  @default(now()) @db.Timestamp(6)
+  users          users     @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_4e055b58ebb5b76da987a770673")
+}
+
+model system_settings {
+  key        String   @id(map: "PK_b1b5bc664526d375c94ce9ad43d") @db.VarChar(100)
+  value      String   @db.VarChar(255)
+  updated_at DateTime @default(now()) @db.Timestamp(6)
+}
+
+model user_roles {
+  id               String    @id(map: "PK_8acd5cf26ebd158416f477de799") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id          String    @db.Uuid
+  role_id          String    @db.Uuid
+  is_primary       Boolean   @default(false)
+  assigned_at      DateTime  @default(now()) @db.Timestamp(6)
+  expires_at       DateTime? @db.Timestamp(6)
+  status           String    @default("ACTIVE") @db.VarChar(25)
+  description      String?   @db.VarChar(200)
+  suspended_reason String?   @db.VarChar(500)
+  assigned_by      String?   @db.Uuid
+  suspended_at     DateTime? @db.Timestamp(6)
+  reactivated_at   DateTime? @db.Timestamp(6)
+  created_at       DateTime  @default(now()) @db.Timestamp(6)
+  updated_at       DateTime  @default(now()) @db.Timestamp(6)
+  deleted_at       DateTime? @db.Timestamp(6)
+  users            users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "FK_87b8888186ca9769c960e926870")
+  roles            roles     @relation(fields: [role_id], references: [id], onUpdate: NoAction, map: "FK_b23c65e50a758245a33ee35fda1")
+
+  @@index([user_id, status], map: "IDX_2d162afeddac672d0e0a9d5564")
+  @@index([role_id], map: "IDX_b23c65e50a758245a33ee35fda")
+}
+
+model users {
+  id                                                 String               @id(map: "PK_a3ffb1c0c8416b9fc6f907b7433") @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  email                                              String               @unique(map: "UQ_97672ac88f789774dd47f7c8be3") @db.VarChar(255)
+  password                                           String               @db.VarChar
+  name                                               String               @db.VarChar
+  role_id                                            String               @db.Uuid
+  unit                                               String               @db.VarChar(50)
+  created_at                                         DateTime             @default(now()) @db.Timestamp(6)
+  updated_at                                         DateTime             @default(now()) @db.Timestamp(6)
+  max_folder_depth                                   Int?
+  access_requests_access_requests_requesterIdTousers access_requests[]    @relation("access_requests_requesterIdTousers")
+  access_requests_access_requests_ownerIdTousers     access_requests[]    @relation("access_requests_ownerIdTousers")
+  audit_logs                                         audit_logs[]
+  file_permissions                                   file_permissions[]
+  files                                              files[]
+  folder_permissions                                 folder_permissions[]
+  folders                                            folders[]
+  share_links                                        share_links[]
+  user_roles                                         user_roles[]
+  roles                                              roles                @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_a2cecd1a3531c0b041e29ba46e1")
+}

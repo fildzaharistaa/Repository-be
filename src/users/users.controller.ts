@@ -11,8 +11,6 @@ import {
   Request,
   Query,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -23,17 +21,16 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import type { RequestWithUser } from '../common/interfaces/request-with-user.interface';
 import { PaginationDto } from '../common/dto/pagination.dto';
-import { UserRole, UserRoleStatus } from '../entities';
 import type { JwtPayload } from '../common/interfaces/jwt-payload.interface';
 import { PermissionCacheService } from '../super-admin/shared/permission-cache.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
   constructor(
     private readonly usersService: UsersService,
-    @InjectRepository(UserRole)
-    private readonly userRoleRepo: Repository<UserRole>,
+    private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly permCache: PermissionCacheService,
   ) {}
@@ -47,22 +44,28 @@ export class UsersController {
   async getRole(@Request() req: RequestWithUser) {
     const user = await this.usersService.findOne(req.user.id);
     return {
-      role: user.role,
+      role: (user as any).role,
       role_id: user.role_id,
     };
   }
 
   @Get('my-roles')
   async getMyRoles(@Request() req: RequestWithUser) {
-    const assignments = await this.userRoleRepo.find({
-      where: { user_id: req.user.id, deleted_at: IsNull() },
-      relations: ['role'],
-      order: { is_primary: 'DESC', assigned_at: 'ASC' },
+    const assignments = await this.prisma.user_roles.findMany({
+      where: { user_id: req.user.id, deleted_at: null },
+      include: { roles: true },
+      orderBy: [{ is_primary: 'desc' }, { assigned_at: 'asc' }],
     });
+
+    const assignmentsWithShim = assignments.map((a) => {
+      (a as any).role = a.roles;
+      return a;
+    });
+
     const activeRoleId = (req.user as any).active_role_id || req.user.role_id || null;
     return {
       active_role_id: activeRoleId,
-      assignments,
+      assignments: assignmentsWithShim,
     };
   }
 
@@ -78,14 +81,14 @@ export class UsersController {
 
   @Post('switch-role')
   async switchRole(@Request() req: RequestWithUser, @Body() dto: SwitchRoleDto) {
-    const assignment = await this.userRoleRepo.findOne({
+    const assignment = await this.prisma.user_roles.findFirst({
       where: {
         user_id: req.user.id,
         role_id: dto.roleId,
-        status: UserRoleStatus.ACTIVE,
-        deleted_at: IsNull(),
+        status: 'ACTIVE',
+        deleted_at: null,
       },
-      relations: ['role'],
+      include: { roles: true },
     });
     if (!assignment) {
       throw new BadRequestException(
@@ -94,25 +97,22 @@ export class UsersController {
     }
     const payload: JwtPayload = {
       sub: req.user.id,
-      email: req.user.email,
-      role: assignment.role?.name || '',
+      email: req.user.email || '',
+      role: assignment.roles?.name || '',
       role_id: req.user.role_id || '',
       active_role_id: dto.roleId,
     };
     const access_token = this.jwtService.sign(payload);
     return {
       access_token,
-      active_role: assignment.role,
+      active_role: assignment.roles,
       active_role_id: dto.roleId,
     };
   }
 
   @Get()
   async findAll(@Query() paginationDto: PaginationDto) {
-    return this.usersService.findAll(
-      paginationDto.page,
-      paginationDto.limit,
-    );
+    return this.usersService.findAll(paginationDto.page, paginationDto.limit);
   }
 
   @Post()
@@ -137,4 +137,3 @@ export class UsersController {
     return { message: 'User deleted successfully' };
   }
 }
-

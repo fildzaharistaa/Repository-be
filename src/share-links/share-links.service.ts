@@ -4,80 +4,62 @@ import {
   ForbiddenException,
   GoneException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
-import { ShareLink } from './share-link.entity';
+import { PrismaService } from '../prisma/prisma.service';
 import { GenerateShareLinkDto } from './dto/generate-share-link.dto';
 import { UpdateShareLinkDto } from './dto/update-share-link.dto';
-import { File } from '../entities/file.entity';
-import { Folder } from '../entities/folder.entity';
-import { User } from '../entities/user.entity';
 import { canShareOrModifyFile } from '../common/utils/file-access';
 
 @Injectable()
 export class ShareLinksService {
-  constructor(
-    @InjectRepository(ShareLink)
-    private shareLinkRepo: Repository<ShareLink>,
-    @InjectRepository(File)
-    private fileRepo: Repository<File>,
-    @InjectRepository(Folder)
-    private folderRepo: Repository<Folder>,
-    @InjectRepository(User)
-    private userRepo: Repository<User>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   private generateToken(): string {
     return crypto.randomBytes(32).toString('hex');
   }
 
   async generate(
-    user: User & { active_role_id?: string; active_role_name?: string },
+    user: any,
     dto: GenerateShareLinkDto,
-  ): Promise<ShareLink> {
+  ) {
     const userId = user.id;
-    // Verify the item exists and user is allowed to share it
     await this.verifyItemOwnership(user, dto.type, dto.id);
 
-    // Deactivate any existing active share link for this item by this user
-    await this.shareLinkRepo.update(
-      { created_by: userId, item_type: dto.type, item_id: dto.id, is_active: true },
-      { is_active: false },
-    );
-
-    const token = this.generateToken();
-    const link = this.shareLinkRepo.create({
-      token,
-      item_type: dto.type,
-      item_id: dto.id,
-      created_by: userId,
-      access_level: dto.access_level ?? 'anyone',
-      permission: dto.permission ?? 'view',
-      expires_at: dto.expires_at ? new Date(dto.expires_at) : null,
-      is_active: true,
-      view_count: 0,
-      download_count: 0,
+    await this.prisma.share_links.updateMany({
+      where: { created_by: userId, item_type: dto.type, item_id: dto.id, is_active: true },
+      data: { is_active: false },
     });
 
-    const saved = await this.shareLinkRepo.save(link);
-    // TypeORM may lose token from RETURNING result due to dual-column mapping (created_by/@JoinColumn conflict)
-    if (!saved.token) saved.token = token;
+    const token = this.generateToken();
+    const saved = await this.prisma.share_links.create({
+      data: {
+        token,
+        item_type: dto.type,
+        item_id: dto.id,
+        created_by: userId,
+        access_level: dto.access_level ?? 'anyone',
+        permission: dto.permission ?? 'view',
+        expires_at: dto.expires_at ? new Date(dto.expires_at) : null,
+        is_active: true,
+        view_count: 0,
+        download_count: 0,
+      },
+    });
     return saved;
   }
 
   async getByToken(token: string): Promise<{
-    link: ShareLink;
+    link: any;
     itemName: string;
     itemSize?: number;
     mimeType?: string;
     sharedBy: string;
     sharedByEmail: string;
   }> {
-    const link = await this.shareLinkRepo.findOne({
+    const link = await this.prisma.share_links.findUnique({
       where: { token },
-      relations: ['creator'],
+      include: { users: true },
     });
 
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
@@ -86,8 +68,10 @@ export class ShareLinksService {
       throw new GoneException('Share link telah kadaluarsa');
     }
 
-    // Increment view count
-    await this.shareLinkRepo.increment({ id: link.id }, 'view_count', 1);
+    await this.prisma.share_links.update({
+      where: { id: link.id },
+      data: { view_count: { increment: 1 } },
+    });
     link.view_count += 1;
 
     let itemName = '';
@@ -95,13 +79,13 @@ export class ShareLinksService {
     let mimeType: string | undefined;
 
     if (link.item_type === 'file') {
-      const file = await this.fileRepo.findOne({ where: { id: link.item_id } });
+      const file = await this.prisma.files.findUnique({ where: { id: link.item_id } });
       if (!file) throw new NotFoundException('File tidak ditemukan');
       itemName = file.name;
-      itemSize = file.size;
+      itemSize = Number(file.size);
       mimeType = file.mime_type;
     } else {
-      const folder = await this.folderRepo.findOne({ where: { id: link.item_id } });
+      const folder = await this.prisma.folders.findUnique({ where: { id: link.item_id } });
       if (!folder) throw new NotFoundException('Folder tidak ditemukan');
       itemName = folder.name;
     }
@@ -111,98 +95,101 @@ export class ShareLinksService {
       itemName,
       itemSize,
       mimeType,
-      sharedBy: link.creator?.name ?? 'Unknown',
-      sharedByEmail: link.creator?.email ?? '',
+      sharedBy: link.users?.name ?? 'Unknown',
+      sharedByEmail: link.users?.email ?? '',
     };
   }
 
-  async getExistingLink(userId: string, type: 'file' | 'folder', itemId: string): Promise<ShareLink | null> {
-    return this.shareLinkRepo.findOne({
+  async getExistingLink(userId: string, type: 'file' | 'folder', itemId: string) {
+    return this.prisma.share_links.findFirst({
       where: { created_by: userId, item_type: type, item_id: itemId, is_active: true },
-      relations: ['creator'],
+      include: { users: true },
     });
   }
 
-  async getFileForDownload(token: string): Promise<{ file: File; link: ShareLink }> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+  async getFileForDownload(token: string) {
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
     if (link.expires_at && new Date(link.expires_at) < new Date()) {
       throw new GoneException('Share link telah kadaluarsa');
     }
     if (link.item_type !== 'file') throw new ForbiddenException('Link ini bukan untuk file');
-
     if (link.permission !== 'download') {
       throw new ForbiddenException('Link ini tidak mengizinkan download');
     }
 
-    const file = await this.fileRepo.findOne({ where: { id: link.item_id } });
+    const file = await this.prisma.files.findUnique({ where: { id: link.item_id } });
     if (!file) throw new NotFoundException('File tidak ditemukan');
     if (!fs.existsSync(file.path)) throw new NotFoundException('File tidak ada di disk');
 
-    await this.shareLinkRepo.increment({ id: link.id }, 'download_count', 1);
+    await this.prisma.share_links.update({
+      where: { id: link.id },
+      data: { download_count: { increment: 1 } },
+    });
 
     return { file, link };
   }
 
-  async getFolderContents(token: string): Promise<{
-    folderName: string;
-    permission: string;
-    files: Array<{ id: string; name: string; size: number; mime_type: string; created_at: Date }>;
-  }> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+  async getFolderContents(token: string) {
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
     if (link.expires_at && new Date(link.expires_at) < new Date()) throw new GoneException('Share link telah kadaluarsa');
     if (link.item_type !== 'folder') throw new ForbiddenException('Link ini bukan untuk folder');
 
-    const folder = await this.folderRepo.findOne({ where: { id: link.item_id } });
+    const folder = await this.prisma.folders.findUnique({ where: { id: link.item_id } });
     if (!folder) throw new NotFoundException('Folder tidak ditemukan');
 
-    const files = await this.fileRepo.find({
-      where: { folder_id: link.item_id, deleted_at: null as any },
-      select: ['id', 'name', 'size', 'mime_type', 'created_at'],
-      order: { name: 'ASC' },
+    const files = await this.prisma.files.findMany({
+      where: { folder_id: link.item_id, deleted_at: null },
+      orderBy: { name: 'asc' },
     });
 
     return {
       folderName: folder.name,
       permission: link.permission,
-      files: files.map(f => ({ id: f.id, name: f.name, size: f.size, mime_type: f.mime_type, created_at: f.created_at })),
+      files: files.map((f) => ({
+        id: f.id,
+        name: f.name,
+        size: Number(f.size),
+        mime_type: f.mime_type,
+        created_at: f.created_at,
+      })),
     };
   }
 
-  async getFolderFileForView(token: string, fileId: string): Promise<{ file: File }> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+  async getFolderFileForView(token: string, fileId: string) {
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
     if (link.expires_at && new Date(link.expires_at) < new Date()) throw new GoneException('Share link telah kadaluarsa');
     if (link.item_type !== 'folder') throw new ForbiddenException('Link ini bukan untuk folder');
 
-    const file = await this.fileRepo.findOne({ where: { id: fileId, folder_id: link.item_id } });
+    const file = await this.prisma.files.findFirst({ where: { id: fileId, folder_id: link.item_id } });
     if (!file) throw new NotFoundException('File tidak ditemukan dalam folder ini');
     if (!fs.existsSync(file.path)) throw new NotFoundException('File tidak ada di disk');
 
     return { file };
   }
 
-  async getFolderFileForDownload(token: string, fileId: string): Promise<{ file: File }> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+  async getFolderFileForDownload(token: string, fileId: string) {
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
     if (link.expires_at && new Date(link.expires_at) < new Date()) throw new GoneException('Share link telah kadaluarsa');
     if (link.item_type !== 'folder') throw new ForbiddenException('Link ini bukan untuk folder');
     if (link.permission !== 'download') throw new ForbiddenException('Link ini tidak mengizinkan download');
 
-    const file = await this.fileRepo.findOne({ where: { id: fileId, folder_id: link.item_id } });
+    const file = await this.prisma.files.findFirst({ where: { id: fileId, folder_id: link.item_id } });
     if (!file) throw new NotFoundException('File tidak ditemukan dalam folder ini');
     if (!fs.existsSync(file.path)) throw new NotFoundException('File tidak ada di disk');
 
     return { file };
   }
 
-  async getFileForView(token: string): Promise<{ file: File; link: ShareLink }> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+  async getFileForView(token: string) {
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (!link.is_active) throw new GoneException('Share link telah dinonaktifkan');
     if (link.expires_at && new Date(link.expires_at) < new Date()) {
@@ -210,17 +197,17 @@ export class ShareLinksService {
     }
     if (link.item_type !== 'file') throw new ForbiddenException('Link ini bukan untuk file');
 
-    const file = await this.fileRepo.findOne({ where: { id: link.item_id } });
+    const file = await this.prisma.files.findUnique({ where: { id: link.item_id } });
     if (!file) throw new NotFoundException('File tidak ditemukan');
     if (!fs.existsSync(file.path)) throw new NotFoundException('File tidak ada di disk');
 
     return { file, link };
   }
 
-  async update(token: string, userId: string, dto: UpdateShareLinkDto, isAdmin: boolean): Promise<ShareLink> {
-    const link = await this.shareLinkRepo.findOne({
+  async update(token: string, userId: string, dto: UpdateShareLinkDto, isAdmin: boolean) {
+    const link = await this.prisma.share_links.findUnique({
       where: { token },
-      relations: ['creator'],
+      include: { users: true },
     });
 
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
@@ -228,42 +215,51 @@ export class ShareLinksService {
       throw new ForbiddenException('Anda tidak berhak mengubah link ini');
     }
 
-    if (dto.access_level !== undefined) link.access_level = dto.access_level;
-    if (dto.permission !== undefined) link.permission = dto.permission;
-    if (dto.expires_at !== undefined) link.expires_at = dto.expires_at ? new Date(dto.expires_at) : null;
-    if (dto.is_active !== undefined) link.is_active = dto.is_active;
-
-    return this.shareLinkRepo.save(link);
+    return this.prisma.share_links.update({
+      where: { id: link.id },
+      data: {
+        ...(dto.access_level !== undefined ? { access_level: dto.access_level } : {}),
+        ...(dto.permission !== undefined ? { permission: dto.permission } : {}),
+        ...(dto.expires_at !== undefined ? { expires_at: dto.expires_at ? new Date(dto.expires_at) : null } : {}),
+        ...(dto.is_active !== undefined ? { is_active: dto.is_active } : {}),
+      },
+    });
   }
 
   async disable(token: string, userId: string, isAdmin: boolean): Promise<{ message: string }> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (link.created_by !== userId && !isAdmin) {
       throw new ForbiddenException('Anda tidak berhak menonaktifkan link ini');
     }
 
-    link.is_active = false;
-    await this.shareLinkRepo.save(link);
+    await this.prisma.share_links.update({
+      where: { id: link.id },
+      data: { is_active: false },
+    });
     return { message: 'Share link berhasil dinonaktifkan' };
   }
 
-  async generateNew(token: string, userId: string, isAdmin: boolean): Promise<ShareLink> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+  async generateNew(token: string, userId: string, isAdmin: boolean) {
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (link.created_by !== userId && !isAdmin) {
       throw new ForbiddenException('Anda tidak berhak mengubah link ini');
     }
 
-    link.token = this.generateToken();
-    link.is_active = true;
-    link.view_count = 0;
-    link.download_count = 0;
-    return this.shareLinkRepo.save(link);
+    return this.prisma.share_links.update({
+      where: { id: link.id },
+      data: {
+        token: this.generateToken(),
+        is_active: true,
+        view_count: 0,
+        download_count: 0,
+      },
+    });
   }
 
   async getStats(token: string, userId: string, isAdmin: boolean): Promise<{ view_count: number; download_count: number }> {
-    const link = await this.shareLinkRepo.findOne({ where: { token } });
+    const link = await this.prisma.share_links.findUnique({ where: { token } });
     if (!link) throw new NotFoundException('Share link tidak ditemukan');
     if (link.created_by !== userId && !isAdmin) {
       throw new ForbiddenException('Anda tidak berhak melihat statistik link ini');
@@ -272,58 +268,65 @@ export class ShareLinksService {
     return { view_count: link.view_count, download_count: link.download_count };
   }
 
-  // Get all share links created by user (for Shared views)
-  async getMySharedLinks(userId: string): Promise<ShareLink[]> {
-    return this.shareLinkRepo.find({
+  async getMySharedLinks(userId: string) {
+    return this.prisma.share_links.findMany({
       where: { created_by: userId, is_active: true },
-      relations: ['creator'],
-      order: { created_at: 'DESC' },
+      include: { users: true },
+      orderBy: { created_at: 'desc' },
     });
   }
 
   private async verifyItemOwnership(
-    requester: User & { active_role_id?: string; active_role_name?: string },
+    requester: any,
     type: 'file' | 'folder',
     itemId: string,
   ): Promise<void> {
-    // Make sure the requester has `role` relation loaded (admin bypass relies on it).
     let user: any = requester;
-    if (!user?.role) {
-      user = await this.userRepo.findOne({
+    if (!user?.role && !user?.roles) {
+      const dbUser = await this.prisma.users.findUnique({
         where: { id: requester.id },
-        relations: ['role'],
+        include: { roles: true },
       });
-      if (requester) {
-        (user as any).active_role_id =
-          (requester as any).active_role_id ?? user.role_id;
+      if (dbUser) {
+        (dbUser as any).role = dbUser.roles;
+        user = dbUser;
+        (user as any).active_role_id = (requester as any).active_role_id ?? dbUser.role_id;
         (user as any).active_role_name = (requester as any).active_role_name;
       }
     }
 
-    if (user?.role?.is_admin === true) return;
+    const effectiveRole = user?.role ?? user?.roles ?? null;
+    if ((effectiveRole as any)?.is_admin === true) return;
 
     if (type === 'folder') {
-      const folder = await this.folderRepo.findOne({ where: { id: itemId } });
+      const folder = await this.prisma.folders.findUnique({ where: { id: itemId } });
       if (!folder) throw new NotFoundException('Folder tidak ditemukan');
       if (folder.owner_id !== user.id) {
-        throw new ForbiddenException(
-          'Hanya pemilik folder yang dapat membuat share link folder',
-        );
+        throw new ForbiddenException('Hanya pemilik folder yang dapat membuat share link folder');
       }
       return;
     }
 
-    const file = await this.fileRepo.findOne({
+    const file = await this.prisma.files.findUnique({
       where: { id: itemId },
-      relations: ['folder', 'folder.owner', 'uploaded_by_role'],
+      include: { folders: { include: { users: true } }, roles: true },
     });
     if (!file) throw new NotFoundException('File tidak ditemukan');
 
-    const allowed = await canShareOrModifyFile(file as any, user as any);
+    const fileLike = {
+      id: file.id,
+      owner_id: file.owner_id,
+      folder_id: file.folder_id,
+      uploaded_by_role_id: file.uploaded_by_role_id,
+      folder: file.folders ? { owner_id: file.folders.owner_id, role_id: file.folders.role_id } : null,
+      uploaded_by_role: file.roles ? { name: file.roles.name } : null,
+    };
+
+    const allowed = await canShareOrModifyFile(fileLike, user, {
+      findRole: (id) => this.prisma.roles.findUnique({ where: { id } }),
+    });
     if (!allowed) {
-      throw new ForbiddenException(
-        'Anda tidak berhak membuat link untuk file ini',
-      );
+      throw new ForbiddenException('Anda tidak berhak membuat link untuk file ini');
     }
   }
 }

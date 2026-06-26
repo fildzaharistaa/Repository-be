@@ -4,9 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, DataSource } from 'typeorm';
-import { Role, RolePermission } from '../../entities';
+import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { CloneRoleDto } from './dto/clone-role.dto';
@@ -15,88 +13,86 @@ import { PermissionCacheService } from '../shared/permission-cache.service';
 @Injectable()
 export class AdminRolesService {
   constructor(
-    @InjectRepository(Role)
-    private readonly roleRepo: Repository<Role>,
-    @InjectRepository(RolePermission)
-    private readonly rolePermissionRepo: Repository<RolePermission>,
-    private readonly dataSource: DataSource,
+    private readonly prisma: PrismaService,
     private readonly cache: PermissionCacheService,
   ) {}
 
-  async create(dto: CreateRoleDto, actorId?: string): Promise<Role> {
-    const existing = await this.roleRepo.findOne({ where: { name: dto.name } });
+  async create(dto: CreateRoleDto, actorId?: string) {
+    const existing = await this.prisma.roles.findFirst({ where: { name: dto.name } });
     if (existing) {
       throw new ConflictException(`Role with name "${dto.name}" already exists`);
     }
-    const role = this.roleRepo.create({
-      name: dto.name,
-      description: dto.description ?? null as any,
-      is_admin: dto.is_admin ?? false,
-      is_active: dto.is_active ?? true,
-      is_system: false,
-      hierarchy_level: dto.hierarchy_level ?? 0,
-      category: dto.category ?? null,
-      color: dto.color ?? null,
-      max_folder_depth: dto.max_folder_depth ?? null,
-      is_private: dto.is_private ?? false,
-      created_by: actorId ?? null,
-      updated_by: actorId ?? null,
+    const saved = await this.prisma.roles.create({
+      data: {
+        name: dto.name,
+        description: dto.description ?? null,
+        is_admin: dto.is_admin ?? false,
+        is_active: dto.is_active ?? true,
+        is_system: false,
+        hierarchy_level: dto.hierarchy_level ?? 0,
+        category: dto.category ?? null,
+        color: dto.color ?? null,
+        max_folder_depth: dto.max_folder_depth ?? null,
+        is_private: dto.is_private ?? false,
+        created_by: actorId ?? null,
+        updated_by: actorId ?? null,
+      },
     });
-    const saved = await this.roleRepo.save(role);
     this.cache.invalidateAll();
     return saved;
   }
 
   async findAll(options?: { includeInactive?: boolean; category?: string }) {
-    const qb = this.roleRepo
-      .createQueryBuilder('r')
-      .where('r.deleted_at IS NULL')
-      .orderBy('r.hierarchy_level', 'DESC')
-      .addOrderBy('r.name', 'ASC');
-    if (!options?.includeInactive) {
-      qb.andWhere('r.is_active = true');
-    }
-    if (options?.category) {
-      qb.andWhere('r.category = :category', { category: options.category });
-    }
-    return qb.getMany();
+    return this.prisma.roles.findMany({
+      where: {
+        deleted_at: null,
+        ...(!options?.includeInactive ? { is_active: true } : {}),
+        ...(options?.category ? { category: options.category } : {}),
+      },
+      orderBy: [{ hierarchy_level: 'desc' }, { name: 'asc' }],
+    });
   }
 
-  async findOne(id: string): Promise<Role> {
-    const role = await this.roleRepo.findOne({ where: { id, deleted_at: IsNull() } });
+  async findOne(id: string) {
+    const role = await this.prisma.roles.findFirst({ where: { id, deleted_at: null } });
     if (!role) throw new NotFoundException(`Role ${id} not found`);
     return role;
   }
 
-  async update(id: string, dto: UpdateRoleDto, actorId?: string): Promise<Role> {
+  async update(id: string, dto: UpdateRoleDto, actorId?: string) {
     const role = await this.findOne(id);
     if (dto.name && dto.name !== role.name) {
-      const dup = await this.roleRepo.findOne({ where: { name: dto.name } });
+      const dup = await this.prisma.roles.findFirst({ where: { name: dto.name } });
       if (dup) throw new ConflictException(`Role name "${dto.name}" already in use`);
       if (role.is_system) {
         throw new BadRequestException('Cannot rename a system role');
       }
-      role.name = dto.name;
     }
-    if (dto.description !== undefined) role.description = dto.description as any;
-    if (dto.is_admin !== undefined) role.is_admin = dto.is_admin;
-    if (dto.is_active !== undefined) role.is_active = dto.is_active;
-    if (dto.hierarchy_level !== undefined) role.hierarchy_level = dto.hierarchy_level;
-    if (dto.category !== undefined) role.category = dto.category;
-    if (dto.color !== undefined) role.color = dto.color;
-    if (dto.max_folder_depth !== undefined) role.max_folder_depth = dto.max_folder_depth;
-    if (dto.is_private !== undefined) role.is_private = dto.is_private;
-    role.updated_by = actorId ?? role.updated_by;
-    const saved = await this.roleRepo.save(role);
+    const saved = await this.prisma.roles.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.is_admin !== undefined ? { is_admin: dto.is_admin } : {}),
+        ...(dto.is_active !== undefined ? { is_active: dto.is_active } : {}),
+        ...(dto.hierarchy_level !== undefined ? { hierarchy_level: dto.hierarchy_level } : {}),
+        ...(dto.category !== undefined ? { category: dto.category } : {}),
+        ...(dto.color !== undefined ? { color: dto.color } : {}),
+        ...(dto.max_folder_depth !== undefined ? { max_folder_depth: dto.max_folder_depth } : {}),
+        ...(dto.is_private !== undefined ? { is_private: dto.is_private } : {}),
+        updated_by: actorId ?? role.updated_by,
+      },
+    });
     this.cache.invalidateAll();
     return saved;
   }
 
-  async toggleActive(id: string, actorId?: string): Promise<Role> {
+  async toggleActive(id: string, actorId?: string) {
     const role = await this.findOne(id);
-    role.is_active = !role.is_active;
-    role.updated_by = actorId ?? role.updated_by;
-    const saved = await this.roleRepo.save(role);
+    const saved = await this.prisma.roles.update({
+      where: { id },
+      data: { is_active: !role.is_active, updated_by: actorId ?? role.updated_by },
+    });
     this.cache.invalidateAll();
     return saved;
   }
@@ -106,44 +102,44 @@ export class AdminRolesService {
     if (role.is_system) {
       throw new BadRequestException('Cannot delete a system role');
     }
-    await this.roleRepo.softDelete(id);
+    await this.prisma.roles.update({ where: { id }, data: { deleted_at: new Date() } });
     this.cache.invalidateAll();
   }
 
-  async clone(id: string, dto: CloneRoleDto, actorId?: string): Promise<Role> {
+  async clone(id: string, dto: CloneRoleDto, actorId?: string) {
     const source = await this.findOne(id);
-    const dup = await this.roleRepo.findOne({ where: { name: dto.newName } });
+    const dup = await this.prisma.roles.findFirst({ where: { name: dto.newName } });
     if (dup) throw new ConflictException(`Role name "${dto.newName}" already in use`);
 
-    return this.dataSource.transaction(async (manager) => {
-      const cloned = manager.create(Role, {
-        name: dto.newName,
-        description: dto.description ?? source.description,
-        is_admin: false,
-        is_active: true,
-        is_system: false,
-        hierarchy_level: source.hierarchy_level,
-        category: source.category,
-        color: source.color,
-        max_folder_depth: source.max_folder_depth,
-        created_by: actorId ?? null,
-        updated_by: actorId ?? null,
+    return this.prisma.$transaction(async (tx) => {
+      const saved = await tx.roles.create({
+        data: {
+          name: dto.newName,
+          description: dto.description ?? source.description,
+          is_admin: false,
+          is_active: true,
+          is_system: false,
+          hierarchy_level: source.hierarchy_level,
+          category: source.category,
+          color: source.color,
+          max_folder_depth: source.max_folder_depth,
+          created_by: actorId ?? null,
+          updated_by: actorId ?? null,
+        },
       });
-      const saved = await manager.save(cloned);
 
       if (dto.copyPermissions !== false) {
-        const sourcePerms = await manager.find(RolePermission, {
+        const sourcePerms = await tx.role_permissions.findMany({
           where: { role_id: source.id },
         });
         if (sourcePerms.length) {
-          const newRows = sourcePerms.map((sp) =>
-            manager.create(RolePermission, {
+          await tx.role_permissions.createMany({
+            data: sourcePerms.map((sp) => ({
               role_id: saved.id,
               permission_id: sp.permission_id,
               granted_by: actorId ?? null,
-            }),
-          );
-          await manager.save(newRows);
+            })),
+          });
         }
       }
 

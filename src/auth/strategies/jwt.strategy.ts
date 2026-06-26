@@ -2,20 +2,14 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { PrismaService } from '../../prisma/prisma.service';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
-import { User } from '../../entities';
-import { Role } from '../../entities/role.entity';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     private configService: ConfigService,
-    @InjectRepository(User)
-    private userRepository: Repository<User>,
-    @InjectRepository(Role)
-    private roleRepository: Repository<Role>,
+    private prisma: PrismaService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
@@ -32,25 +26,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-   async validate(payload: any) {
-    const user = await this.userRepository.findOne({
+  async validate(payload: any) {
+    const user = await this.prisma.users.findUnique({
       where: { id: payload.sub },
-      relations: ['role'],
+      include: { roles: true },
     });
 
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
 
-    // Additive: expose active role context from JWT (set via /users/switch-role).
-    // Does not alter user.role / user.role_id used by legacy code.
-    // payload.role holds the active role name (updated by switch-role).
-    // payload.active_role_id holds the active role UUID.
+    // Compatibility shim: expose user.role for modules not yet migrated to Prisma
+    (user as any).role = user.roles;
+
     if (payload?.active_role_id) {
       (user as any).active_role_id = payload.active_role_id;
-      // Load the active role entity so is_admin can be checked downstream
-      // (user.role is the primary role; active_role reflects the current session role)
-      const activeRole = await this.roleRepository.findOne({
+      const activeRole = await this.prisma.roles.findUnique({
         where: { id: payload.active_role_id },
       });
       if (activeRole) (user as any).active_role = activeRole;
@@ -62,4 +53,3 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     return user;
   }
 }
-

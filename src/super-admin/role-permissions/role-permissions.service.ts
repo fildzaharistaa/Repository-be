@@ -3,61 +3,53 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, IsNull, Repository } from 'typeorm';
-import { Permission, Role, RolePermission } from '../../entities';
+import { PrismaService } from '../../prisma/prisma.service';
 import { CopyPermissionsDto } from './dto/copy-permissions.dto';
 import { PermissionCacheService } from '../shared/permission-cache.service';
 
 @Injectable()
 export class RolePermissionsService {
   constructor(
-    @InjectRepository(Role)
-    private readonly roleRepo: Repository<Role>,
-    @InjectRepository(Permission)
-    private readonly permissionRepo: Repository<Permission>,
-    @InjectRepository(RolePermission)
-    private readonly rpRepo: Repository<RolePermission>,
-    private readonly dataSource: DataSource,
+    private readonly prisma: PrismaService,
     private readonly cache: PermissionCacheService,
   ) {}
 
-  private async ensureRole(roleId: string): Promise<Role> {
-    const role = await this.roleRepo.findOne({ where: { id: roleId, deleted_at: IsNull() } });
+  private async ensureRole(roleId: string) {
+    const role = await this.prisma.roles.findFirst({ where: { id: roleId, deleted_at: null } });
     if (!role) throw new NotFoundException(`Role ${roleId} not found`);
     return role;
   }
 
-  async listForRole(roleId: string): Promise<Permission[]> {
+  async listForRole(roleId: string) {
     await this.ensureRole(roleId);
-    const rows = await this.rpRepo.find({
+    const rows = await this.prisma.role_permissions.findMany({
       where: { role_id: roleId },
-      relations: ['permission'],
+      include: { permissions: true },
     });
     return rows
-      .map((r) => r.permission)
-      .filter((p): p is Permission => !!p && !p.deleted_at)
+      .map((r) => r.permissions)
+      .filter((p): p is NonNullable<typeof p> => !!p && !p.deleted_at)
       .sort((a, b) => a.slug.localeCompare(b.slug));
   }
 
   async addPermissions(roleId: string, permissionIds: string[], actorId?: string) {
     await this.ensureRole(roleId);
-    const perms = await this.permissionRepo.find({
-      where: { id: In(permissionIds), deleted_at: IsNull() },
+    const perms = await this.prisma.permissions.findMany({
+      where: { id: { in: permissionIds }, deleted_at: null },
     });
     if (perms.length !== permissionIds.length) {
       throw new BadRequestException('One or more permissionIds are invalid');
     }
-    const existing = await this.rpRepo.find({
-      where: { role_id: roleId, permission_id: In(permissionIds) },
+    const existing = await this.prisma.role_permissions.findMany({
+      where: { role_id: roleId, permission_id: { in: permissionIds } },
     });
     const existingIds = new Set(existing.map((e) => e.permission_id));
     const toInsert = permissionIds
       .filter((pid) => !existingIds.has(pid))
-      .map((pid) =>
-        this.rpRepo.create({ role_id: roleId, permission_id: pid, granted_by: actorId ?? null }),
-      );
-    if (toInsert.length) await this.rpRepo.save(toInsert);
+      .map((pid) => ({ role_id: roleId, permission_id: pid, granted_by: actorId ?? null }));
+    if (toInsert.length) {
+      await this.prisma.role_permissions.createMany({ data: toInsert });
+    }
     this.cache.invalidateRole(roleId);
     return this.listForRole(roleId);
   }
@@ -65,24 +57,23 @@ export class RolePermissionsService {
   async replacePermissions(roleId: string, permissionIds: string[], actorId?: string) {
     await this.ensureRole(roleId);
     if (permissionIds.length) {
-      const perms = await this.permissionRepo.find({
-        where: { id: In(permissionIds), deleted_at: IsNull() },
+      const perms = await this.prisma.permissions.findMany({
+        where: { id: { in: permissionIds }, deleted_at: null },
       });
       if (perms.length !== permissionIds.length) {
         throw new BadRequestException('One or more permissionIds are invalid');
       }
     }
-    await this.dataSource.transaction(async (manager) => {
-      await manager.delete(RolePermission, { role_id: roleId });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.role_permissions.deleteMany({ where: { role_id: roleId } });
       if (permissionIds.length) {
-        const rows = permissionIds.map((pid) =>
-          manager.create(RolePermission, {
+        await tx.role_permissions.createMany({
+          data: permissionIds.map((pid) => ({
             role_id: roleId,
             permission_id: pid,
             granted_by: actorId ?? null,
-          }),
-        );
-        await manager.save(rows);
+          })),
+        });
       }
     });
     this.cache.invalidateRole(roleId);
@@ -91,11 +82,11 @@ export class RolePermissionsService {
 
   async removePermission(roleId: string, permissionId: string) {
     await this.ensureRole(roleId);
-    const row = await this.rpRepo.findOne({
+    const row = await this.prisma.role_permissions.findFirst({
       where: { role_id: roleId, permission_id: permissionId },
     });
     if (!row) throw new NotFoundException('Permission not assigned to this role');
-    await this.rpRepo.delete(row.id);
+    await this.prisma.role_permissions.delete({ where: { id: row.id } });
     this.cache.invalidateRole(roleId);
     return { message: 'Permission removed from role' };
   }
@@ -106,7 +97,9 @@ export class RolePermissionsService {
     }
     await this.ensureRole(targetRoleId);
     await this.ensureRole(dto.sourceRoleId);
-    const sourcePerms = await this.rpRepo.find({ where: { role_id: dto.sourceRoleId } });
+    const sourcePerms = await this.prisma.role_permissions.findMany({
+      where: { role_id: dto.sourceRoleId },
+    });
     const ids = sourcePerms.map((s) => s.permission_id);
     const mode = dto.mode ?? 'merge';
     if (mode === 'replace') {

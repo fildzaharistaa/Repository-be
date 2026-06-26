@@ -2,9 +2,8 @@ import { Controller, Get, Param, UseGuards, Request } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, In } from 'typeorm';
-import { Role, User, Folder, File, SystemSetting, FolderPermission } from '../entities';
+import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 
 interface FolderOverviewItem {
   id: string;
@@ -22,141 +21,97 @@ interface FolderOverviewItem {
 @Controller('stats')
 @UseGuards(JwtAuthGuard)
 export class StatsController {
-  constructor(
-    @InjectRepository(Role)
-    private roleRepository: Repository<Role>,
-    @InjectRepository(User)
-    private userRepository: Repository<User>,
-    @InjectRepository(Folder)
-    private folderRepository: Repository<Folder>,
-    @InjectRepository(File)
-    private fileRepository: Repository<File>,
-    @InjectRepository(SystemSetting)
-    private settingRepository: Repository<SystemSetting>,
-    @InjectRepository(FolderPermission)
-    private permissionRepository: Repository<FolderPermission>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   @Get('super-admin')
   @UseGuards(RolesGuard)
   @Roles('admin')
   async getSuperAdminStats() {
-    // Total roles
-    const totalRoles = await this.roleRepository.count();
+    const totalRoles = await this.prisma.roles.count();
+    const totalFolders = await this.prisma.folders.count({ where: { deleted_at: null } });
+    const totalFiles = await this.prisma.files.count({ where: { deleted_at: null } });
 
-    // Total folders (not deleted)
-    const totalFolders = await this.folderRepository.count({
-      where: { deleted_at: IsNull() },
-    });
+    const foldersPerUnit = await this.prisma.$queryRaw<Array<{ unit: string; count: string }>>`
+      SELECT r.name as unit, COUNT(*)::text as count
+      FROM folders f
+      INNER JOIN roles r ON r.id = f.role_id
+      WHERE f.deleted_at IS NULL AND f.role_id IS NOT NULL
+      GROUP BY r.name
+    `;
 
-    // Total files (not deleted)
-    const totalFiles = await this.fileRepository.count({
-      where: { deleted_at: IsNull() },
-    });
+    const usersPerRole = await this.prisma.$queryRaw<Array<{ roleName: string; count: string }>>`
+      SELECT r.name as "roleName", COUNT(DISTINCT ur.user_id)::text as count
+      FROM user_roles ur
+      INNER JOIN roles r ON r.id = ur.role_id
+      WHERE ur.deleted_at IS NULL AND ur.status = 'ACTIVE'
+      GROUP BY r.name
+      ORDER BY count DESC
+    `;
 
-    // Folders per unit — join roles via role_id (source of truth for active role at creation)
-    const foldersPerUnit = await this.folderRepository
-      .createQueryBuilder('folder')
-      .innerJoin('roles', 'role', 'role.id = folder.role_id')
-      .select('role.name', 'unit')
-      .addSelect('COUNT(*)', 'count')
-      .where('folder.deleted_at IS NULL')
-      .andWhere('folder.role_id IS NOT NULL')
-      .groupBy('role.name')
-      .getRawMany();
-
-    // Users per role — count ALL active role assignments from user_roles (includes multi-role users)
-    const usersPerRole = await this.userRepository.manager
-      .createQueryBuilder()
-      .select('r.name', 'roleName')
-      .addSelect('COUNT(DISTINCT ur.user_id)', 'count')
-      .from('user_roles', 'ur')
-      .innerJoin('roles', 'r', 'r.id = ur.role_id')
-      .where('ur.deleted_at IS NULL')
-      .andWhere("ur.status = 'ACTIVE'")
-      .groupBy('r.name')
-      .orderBy('count', 'DESC')
-      .getRawMany();
-
-    // Recent activity
-    // 1. Folders
-    const recentFolders = await this.folderRepository.find({
-      where: { deleted_at: IsNull() },
-      order: { created_at: 'DESC' },
+    const recentFolders = await this.prisma.folders.findMany({
+      where: { deleted_at: null },
+      orderBy: { created_at: 'desc' },
       take: 15,
-      relations: ['owner'],
+      include: { users: true },
     });
 
-    // 2. Files
-    const recentFiles = await this.fileRepository.find({
-      where: { deleted_at: IsNull() },
-      order: { created_at: 'DESC' },
+    const recentFiles = await this.prisma.files.findMany({
+      where: { deleted_at: null },
+      orderBy: { created_at: 'desc' },
       take: 15,
-      relations: ['folder', 'folder.owner'],
+      include: { folders: { include: { users: true } } },
     });
 
-    // 3. User creations/updates (Super Admin activity)
-    // We assume if a user's updated_at is recent, it's either an update or creation
-    const recentUsers = await this.userRepository.find({
-      order: { updated_at: 'DESC' },
+    const recentUsers = await this.prisma.users.findMany({
+      orderBy: { updated_at: 'desc' },
       take: 15,
-      relations: ['role'],
+      include: { roles: true },
     });
 
-    // Combine and sort recent activity
     const recentActivity = [
       ...recentFolders.map((f) => ({
         timestamp: f.created_at,
-        user: f.owner?.email || 'System',
+        user: f.users?.email || 'System',
         action: `Create Folder "${f.name}"`,
-        type: 'user', // regular user activity
+        type: 'user',
       })),
       ...recentFiles.map((f) => ({
         timestamp: f.created_at,
-        user: f.folder?.owner?.email || 'System',
+        user: f.folders?.users?.email || 'System',
         action: `Upload File "${f.name}"`,
-        type: 'user', // regular user activity
+        type: 'user',
       })),
       ...recentUsers.map((u) => {
-        // If created_at and updated_at are very close (< 2 seconds), it's a creation
         const isNew = new Date(u.updated_at).getTime() - new Date(u.created_at).getTime() < 2000;
         return {
           timestamp: u.updated_at,
           user: 'Super Admin',
           action: isNew ? `Create User "${u.name}"` : `Update User "${u.name}"`,
-          type: 'superadmin', // super admin activity
+          type: 'superadmin',
         };
       }),
     ]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 30); // Take top 30 items for Hari Ini / Sebelumnya grouping
+      .slice(0, 30);
 
-    // Total storage size
-    const storageResult = await this.fileRepository
-      .createQueryBuilder('file')
-      .select('SUM(file.size)', 'totalSize')
-      .where('file.deleted_at IS NULL')
-      .getRawOne();
+    const storageAgg = await this.prisma.files.aggregate({
+      where: { deleted_at: null },
+      _sum: { size: true },
+    });
+    const totalSize = Number(storageAgg._sum.size ?? 0);
 
-    const totalSize = parseInt(storageResult?.totalSize || '0');
+    const storagePerUnit = await this.prisma.$queryRaw<Array<{ unit: string; totalSize: string }>>`
+      SELECT r.name as unit, COALESCE(SUM(f.size), 0)::text as "totalSize"
+      FROM files f
+      INNER JOIN folders folder ON folder.id = f.folder_id
+      INNER JOIN roles r ON r.id = folder.role_id
+      WHERE f.deleted_at IS NULL AND folder.deleted_at IS NULL AND folder.role_id IS NOT NULL
+      GROUP BY r.name
+    `;
 
-    // Storage per unit — grouped by role name via folder.role_id for accurate role mapping
-    const storagePerUnit = await this.fileRepository
-      .createQueryBuilder('file')
-      .innerJoin('file.folder', 'folder')
-      .innerJoin('roles', 'role', 'role.id = folder.role_id')
-      .select('role.name', 'unit')
-      .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
-      .where('file.deleted_at IS NULL')
-      .andWhere('folder.deleted_at IS NULL')
-      .andWhere('folder.role_id IS NOT NULL')
-      .groupBy('role.name')
-      .getRawMany();
-
-    // Get system settings
-    const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
-    const maxStorageSetting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
-    const maxUploadSetting = await this.settingRepository.findOne({ where: { key: 'max_upload_size' } });
+    const maxDepthSetting = await this.prisma.system_settings.findUnique({ where: { key: 'max_folder_depth' } });
+    const maxStorageSetting = await this.prisma.system_settings.findUnique({ where: { key: 'max_storage_per_user' } });
+    const maxUploadSetting = await this.prisma.system_settings.findUnique({ where: { key: 'max_upload_size' } });
     const maxFolderDepth = maxDepthSetting ? parseInt(maxDepthSetting.value, 10) : 5;
     const maxStoragePerUser = maxStorageSetting ? parseInt(maxStorageSetting.value, 10) : 104857600;
     const maxUploadSize = maxUploadSetting ? parseInt(maxUploadSetting.value, 10) : 5242880;
@@ -169,34 +124,24 @@ export class StatsController {
       maxFolderDepth,
       maxStoragePerUser,
       maxUploadSize,
-      foldersPerUnit,
-      storagePerUnit,
-      usersPerRole,
+      foldersPerUnit: foldersPerUnit.map((r) => ({ unit: r.unit, count: r.count })),
+      storagePerUnit: storagePerUnit.map((r) => ({ unit: r.unit, totalSize: r.totalSize })),
+      usersPerRole: usersPerRole.map((r) => ({ roleName: r.roleName, count: r.count })),
       recentActivity,
     };
   }
 
-  // =============================
-  // STATS PER USER (SEMUA ROLE)
-  // =============================
   @Get('user')
   async getUserStats(@Request() req) {
     const userId = req.user.id;
 
-    // Get user and their role
-    const user = await this.userRepository.findOne({
+    const user = await this.prisma.users.findUnique({
       where: { id: userId },
-      relations: ['role']
+      include: { roles: true },
     });
+    (user as any).role = user?.roles;
 
-    // Use active_role_id from JWT (set by /users/switch-role), not primary role from DB.
-    // Same pattern used in folders.service.ts:331, files.service.ts:90, users.controller.ts:62.
     const activeRoleId = (req.user as any).active_role_id ?? req.user.role_id ?? null;
-
-    // Delegate to the shared helper which correctly applies:
-    //   - owner_id filter for private roles (prevents other users' private folders from leaking)
-    //   - role_id isolation for user-level permissions with role_id=NULL (legacy data guard)
-    //   - same-workspace exclusion from role-based shared grants (avoids double-counting)
     const accessibleFolderIds = await this.getAccessibleFolderIds(userId, activeRoleId);
 
     let totalFolders = 0;
@@ -205,61 +150,56 @@ export class StatsController {
     let recentFiles: any[] = [];
 
     if (accessibleFolderIds.length > 0) {
-      // Total accessible folders (not deleted)
-      totalFolders = await this.folderRepository.count({
-        where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
+      totalFolders = await this.prisma.folders.count({
+        where: { id: { in: accessibleFolderIds }, deleted_at: null },
       });
 
-      // Total files di dalam accessible folders
-      totalFiles = await this.fileRepository
-        .createQueryBuilder('file')
-        .innerJoin('file.folder', 'folder')
-        .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
-        .andWhere('file.deleted_at IS NULL')
-        .andWhere('folder.deleted_at IS NULL')
-        .getCount();
+      totalFiles = await this.prisma.files.count({
+        where: {
+          folder_id: { in: accessibleFolderIds },
+          deleted_at: null,
+          folders: { deleted_at: null },
+        },
+      });
 
-      // Total storage dari file di dalam accessible folders
-      const storageResult = await this.fileRepository
-        .createQueryBuilder('file')
-        .innerJoin('file.folder', 'folder')
-        .select('SUM(file.size)', 'totalSize')
-        .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
-        .andWhere('file.deleted_at IS NULL')
-        .andWhere('folder.deleted_at IS NULL')
-        .getRawOne();
+      const storageAgg = await this.prisma.files.aggregate({
+        where: {
+          folder_id: { in: accessibleFolderIds },
+          deleted_at: null,
+          folders: { deleted_at: null },
+        },
+        _sum: { size: true },
+      });
+      totalSize = Number(storageAgg._sum.size ?? 0);
 
-      totalSize = parseInt(storageResult?.totalSize || '0');
-
-      //  milik user ini (15 terbaru)
-      recentFiles = await this.fileRepository
-        .createQueryBuilder('file')
-        .innerJoinAndSelect('file.folder', 'folder')
-        .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
-        .andWhere('file.deleted_at IS NULL')
-        .andWhere('folder.deleted_at IS NULL')
-        .orderBy('file.created_at', 'DESC')
-        .take(15)
-        .getMany();
+      recentFiles = await this.prisma.files.findMany({
+        where: {
+          folder_id: { in: accessibleFolderIds },
+          deleted_at: null,
+          folders: { deleted_at: null },
+        },
+        include: { folders: true },
+        orderBy: { created_at: 'desc' },
+        take: 15,
+      });
     }
 
-    // Get max storage per user setting
-    const maxStorageSetting = await this.settingRepository.findOne({ where: { key: 'max_storage_per_user' } });
+    const maxStorageSetting = await this.prisma.system_settings.findUnique({ where: { key: 'max_storage_per_user' } });
     const maxStoragePerUser = maxStorageSetting ? parseInt(maxStorageSetting.value, 10) : 104857600;
 
-    // Get max folder depth setting
-    const maxDepthSetting = await this.settingRepository.findOne({ where: { key: 'max_folder_depth' } });
+    const maxDepthSetting = await this.prisma.system_settings.findUnique({ where: { key: 'max_folder_depth' } });
     const globalMaxFolderDepth = maxDepthSetting ? parseInt(maxDepthSetting.value, 10) : 5;
-    
-    // Load active role entity to get its max_folder_depth.
-    // user.role is always the primary role and does not reflect role switches.
+
     const activeRole = activeRoleId
-      ? await this.roleRepository.findOne({ where: { id: activeRoleId } })
+      ? await this.prisma.roles.findUnique({ where: { id: activeRoleId } })
       : null;
 
-    const maxFolderDepth = user?.max_folder_depth != null
-      ? user.max_folder_depth
-      : (activeRole?.max_folder_depth != null ? activeRole.max_folder_depth : globalMaxFolderDepth);
+    const maxFolderDepth =
+      user?.max_folder_depth != null
+        ? user.max_folder_depth
+        : activeRole?.max_folder_depth != null
+        ? activeRole.max_folder_depth
+        : globalMaxFolderDepth;
 
     return {
       totalFolders,
@@ -270,16 +210,13 @@ export class StatsController {
       recentFiles: recentFiles.map((f) => ({
         id: f.id,
         name: f.name,
-        size: f.size,
+        size: Number(f.size),
         created_at: f.created_at,
-        folder_name: f.folder?.name || '-',
+        folder_name: f.folders?.name || '-',
       })),
     };
   }
 
-  // =============================
-  // FOLDER OVERVIEW (PER ROOT FOLDER STATS)
-  // =============================
   @Get('folder-overview')
   async getFolderOverview(@Request() req): Promise<FolderOverviewItem[]> {
     const userId = req.user.id;
@@ -288,19 +225,14 @@ export class StatsController {
     const accessibleFolderIds = await this.getAccessibleFolderIds(userId, activeRoleId);
     if (accessibleFolderIds.length === 0) return [];
 
-    // Fetch all accessible folders with owner + workspace role info for shared badge
-    const folders = await this.folderRepository.find({
-      where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
-      relations: ['owner', 'role'],
+    const folders = await this.prisma.folders.findMany({
+      where: { id: { in: accessibleFolderIds }, deleted_at: null },
+      include: { users: true, roles: true },
     });
 
-    // Identify root folders: parent_id is null OR parent is outside the accessible set
     const accessibleSet = new Set(accessibleFolderIds);
-    const rootFolders = folders.filter(
-      (f) => !f.parent_id || !accessibleSet.has(f.parent_id),
-    );
+    const rootFolders = folders.filter((f) => !f.parent_id || !accessibleSet.has(f.parent_id));
 
-    // Build parent → children map for BFS
     const childrenMap = new Map<string, string[]>();
     for (const folder of folders) {
       if (folder.parent_id && accessibleSet.has(folder.parent_id)) {
@@ -309,7 +241,6 @@ export class StatsController {
       }
     }
 
-    // BFS: collect all folder IDs under a root (inclusive)
     const collectDescendants = (rootId: string): string[] => {
       const result: string[] = [rootId];
       const queue = [rootId];
@@ -322,30 +253,27 @@ export class StatsController {
       return result;
     };
 
-    // For each root folder, count files + storage across all descendants
     const results = await Promise.all(
       rootFolders.map(async (root) => {
         const allIds = collectDescendants(root.id);
         const subfolderCount = allIds.length - 1;
 
-        const fileStats = await this.fileRepository
-          .createQueryBuilder('file')
-          .select('COUNT(*)', 'count')
-          .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
-          .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
-          .andWhere('file.deleted_at IS NULL')
-          .getRawOne();
+        const fileStats = await this.prisma.$queryRaw<Array<{ count: string; totalSize: string }>>`
+          SELECT COUNT(*)::text as count, COALESCE(SUM(size), 0)::text as "totalSize"
+          FROM files
+          WHERE folder_id = ANY(${allIds}::uuid[]) AND deleted_at IS NULL
+        `;
 
         return {
           id: root.id,
           name: root.name,
           subfolder_count: subfolderCount,
-          file_count: parseInt(fileStats?.count ?? '0', 10),
-          storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
+          file_count: parseInt(fileStats[0]?.count ?? '0', 10),
+          storage_size: parseInt(fileStats[0]?.totalSize ?? '0', 10),
           updated_at: root.updated_at,
-          owner_name: root.owner?.name ?? null,
-          owner_email: root.owner?.email ?? null,
-          owner_role: root.role?.name ?? null,
+          owner_name: root.users?.name ?? null,
+          owner_email: root.users?.email ?? null,
+          owner_role: root.roles?.name ?? null,
           is_shared: root.role_id !== activeRoleId,
         };
       }),
@@ -354,9 +282,6 @@ export class StatsController {
     return results;
   }
 
-  // =============================
-  // FOLDER CHILDREN STATS (LAZY EXPAND)
-  // =============================
   @Get('folder-children/:folderId')
   async getFolderChildrenStats(
     @Param('folderId') folderId: string,
@@ -367,17 +292,13 @@ export class StatsController {
 
     const accessibleFolderIds = await this.getAccessibleFolderIds(userId, activeRoleId);
     if (accessibleFolderIds.length === 0) return [];
-
-    // Verify the requested folder is accessible
     if (!accessibleFolderIds.includes(folderId)) return [];
 
-    // Fetch all accessible folders for BFS
-    const allAccessibleFolders = await this.folderRepository.find({
-      where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
-      select: ['id', 'name', 'parent_id', 'updated_at'],
+    const allAccessibleFolders = await this.prisma.folders.findMany({
+      where: { id: { in: accessibleFolderIds }, deleted_at: null },
+      select: { id: true, name: true, parent_id: true, updated_at: true },
     });
 
-    // Build parent → children map
     const accessibleSet = new Set(accessibleFolderIds);
     const childrenMap = new Map<string, typeof allAccessibleFolders>();
     for (const folder of allAccessibleFolders) {
@@ -387,7 +308,6 @@ export class StatsController {
       }
     }
 
-    // BFS: collect all descendant IDs under a node (inclusive)
     const collectDescendantIds = (nodeId: string): string[] => {
       const result: string[] = [nodeId];
       const queue = [nodeId];
@@ -400,30 +320,26 @@ export class StatsController {
       return result;
     };
 
-    // Direct children of the requested folder
     const directChildren = childrenMap.get(folderId) ?? [];
     if (directChildren.length === 0) return [];
 
-    // For each direct child, compute recursive stats
     const results = await Promise.all(
       directChildren.map(async (child) => {
         const allIds = collectDescendantIds(child.id);
         const subfolderCount = allIds.length - 1;
 
-        const fileStats = await this.fileRepository
-          .createQueryBuilder('file')
-          .select('COUNT(*)', 'count')
-          .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
-          .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
-          .andWhere('file.deleted_at IS NULL')
-          .getRawOne();
+        const fileStats = await this.prisma.$queryRaw<Array<{ count: string; totalSize: string }>>`
+          SELECT COUNT(*)::text as count, COALESCE(SUM(size), 0)::text as "totalSize"
+          FROM files
+          WHERE folder_id = ANY(${allIds}::uuid[]) AND deleted_at IS NULL
+        `;
 
         return {
           id: child.id,
           name: child.name,
           subfolder_count: subfolderCount,
-          file_count: parseInt(fileStats?.count ?? '0', 10),
-          storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
+          file_count: parseInt(fileStats[0]?.count ?? '0', 10),
+          storage_size: parseInt(fileStats[0]?.totalSize ?? '0', 10),
           updated_at: child.updated_at,
           owner_name: null,
           owner_email: null,
@@ -436,57 +352,47 @@ export class StatsController {
     return results;
   }
 
-  // Shared helper: returns all folder IDs accessible to the given user + active role
   private async getAccessibleFolderIds(userId: string, activeRoleId: string | null): Promise<string[]> {
     if (!activeRoleId) return [];
 
     const now = new Date();
+    const activeRole = await this.prisma.roles.findUnique({ where: { id: activeRoleId } });
 
-    const activeRole = await this.roleRepository.findOne({ where: { id: activeRoleId } });
-
-    // For private roles (e.g. Dosen/Tendik), only surface folders owned by the current user.
-    // Non-private roles see all folders in their role workspace.
-    const workspaceQuery = this.folderRepository
-      .createQueryBuilder('folder')
-      .select('folder.id', 'id')
-      .where('folder.role_id = :activeRoleId', { activeRoleId })
-      .andWhere('folder.deleted_at IS NULL');
-
+    let workspaceFolders: Array<{ id: string }>;
     if (activeRole?.is_private) {
-      workspaceQuery.andWhere('folder.owner_id = :userId', { userId });
+      workspaceFolders = await this.prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM folders
+        WHERE role_id = ${activeRoleId}::uuid AND deleted_at IS NULL AND owner_id = ${userId}::uuid
+      `;
+    } else {
+      workspaceFolders = await this.prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM folders
+        WHERE role_id = ${activeRoleId}::uuid AND deleted_at IS NULL
+      `;
     }
 
-    const workspaceFolders = await workspaceQuery.getRawMany();
+    const roleSharedPerms = await this.prisma.$queryRaw<Array<{ folder_id: string }>>`
+      SELECT fp.folder_id FROM folder_permissions fp
+      INNER JOIN folders folder ON folder.id = fp.folder_id AND folder.deleted_at IS NULL
+      LEFT JOIN roles folderRole ON folderRole.id = folder.role_id
+      WHERE fp.role_id = ${activeRoleId}::uuid
+        AND fp.user_id IS NULL
+        AND fp.can_read = true
+        AND (fp.expires_at IS NULL OR fp.expires_at > ${now})
+        AND folder.role_id != ${activeRoleId}::uuid
+        AND NOT (folderRole.is_private = true AND folder.role_id != ${activeRoleId}::uuid)
+    `;
 
-    // Only include folders whose role_id differs from the active role.
-    // This excludes same-role workspace folders (already covered above) and prevents
-    // private subfolders with a role-level permission from leaking to all role members.
-    const roleSharedPerms = await this.permissionRepository
-      .createQueryBuilder('fp')
-      .innerJoin('folders', 'folder', 'folder.id = fp.folder_id AND folder.deleted_at IS NULL')
-      .leftJoin('roles', 'folderRole', 'folderRole.id = folder.role_id')
-      .select('fp.folder_id', 'folder_id')
-      .where('fp.role_id = :activeRoleId', { activeRoleId })
-      .andWhere('fp.user_id IS NULL')
-      .andWhere('fp.can_read = true')
-      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('folder.role_id != :activeRoleId', { activeRoleId })
-      .andWhere('NOT (folderRole.is_private = true AND folder.role_id != :activeRoleId)', { activeRoleId })
-      .getRawMany();
-
-    // JOIN to folders/roles to exclude private-workspace folders that belong to a different
-    // role context — guards against legacy role_id=NULL permissions on private folders.
-    const userSharedPerms = await this.permissionRepository
-      .createQueryBuilder('fp')
-      .innerJoin('folders', 'f2', 'f2.id = fp.folder_id AND f2.deleted_at IS NULL')
-      .leftJoin('roles', 'r2', 'r2.id = f2.role_id')
-      .select('fp.folder_id', 'folder_id')
-      .where('fp.user_id = :userId', { userId })
-      .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
-      .andWhere('fp.can_read = true')
-      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
-      .getRawMany();
+    const userSharedPerms = await this.prisma.$queryRaw<Array<{ folder_id: string }>>`
+      SELECT fp.folder_id FROM folder_permissions fp
+      INNER JOIN folders f2 ON f2.id = fp.folder_id AND f2.deleted_at IS NULL
+      LEFT JOIN roles r2 ON r2.id = f2.role_id
+      WHERE fp.user_id = ${userId}::uuid
+        AND (fp.role_id = ${activeRoleId}::uuid OR fp.role_id IS NULL)
+        AND fp.can_read = true
+        AND (fp.expires_at IS NULL OR fp.expires_at > ${now})
+        AND NOT (r2.is_private = true AND f2.role_id != ${activeRoleId}::uuid)
+    `;
 
     return Array.from(new Set([
       ...workspaceFolders.map((f) => f.id),

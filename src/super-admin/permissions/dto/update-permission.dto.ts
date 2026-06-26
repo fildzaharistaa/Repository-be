@@ -1,5 +1,6 @@
 import { IsBoolean, IsIn, IsOptional, IsString, Length } from 'class-validator';
-import type { PermissionVisibility } from '../../../entities';
+
+type PermissionVisibility = 'internal' | 'public' | 'hidden';
 
 export class UpdatePermissionDto {
   @IsString()

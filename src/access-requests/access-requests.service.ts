@@ -1,44 +1,10 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
-import { AccessRequest } from './access-request.entity';
-import { Folder } from '../entities/folder.entity';
-import { File } from '../entities/file.entity';
-import { User } from '../entities/user.entity';
-import { Role } from '../entities/role.entity';
-import { FolderPermission } from '../entities/folder-permission.entity';
-import { FilePermission } from '../entities/file-permission.entity';
-import { SystemSetting } from '../entities/system-setting.entity';
+import { PrismaService } from '../prisma/prisma.service';
 import { canShareOrModifyFile } from '../common/utils/file-access';
 
 @Injectable()
 export class AccessRequestsService {
-
-  constructor(
-    @InjectRepository(AccessRequest)
-    private accessRequestRepo: Repository<AccessRequest>,
-
-    @InjectRepository(Folder)
-    private folderRepo: Repository<Folder>,
-
-    @InjectRepository(File)
-    private fileRepo: Repository<File>,
-
-    @InjectRepository(FolderPermission)
-    private folderPermissionRepo: Repository<FolderPermission>,
-
-    @InjectRepository(FilePermission)
-    private filePermissionRepo: Repository<FilePermission>,
-
-    @InjectRepository(User)
-    private userRepo: Repository<User>,
-
-    @InjectRepository(Role)
-    private roleRepository: Repository<Role>,
-
-    @InjectRepository(SystemSetting)
-    private settingRepository: Repository<SystemSetting>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   private mapRoleLabelToName(label: string): string {
     const norm = label.toLowerCase().trim();
@@ -50,325 +16,278 @@ export class AccessRequestsService {
     return norm;
   }
 
-  // =============================
-  // USER REQUEST ACCESS
-  // =============================
-  async requestAccess(
-    userId: string,
-    folderId?: string,
-    fileId?: string,
-    message?: string
-  ) {
-
+  async requestAccess(userId: string, folderId?: string, fileId?: string, message?: string) {
     if (!folderId && !fileId) {
       throw new ForbiddenException('FolderId or FileId required');
     }
 
-    const requester = { id: userId } as User;
-
-    // =============================
-    // REQUEST FOLDER ACCESS
-    // =============================
     if (folderId) {
-
-      const folder = await this.folderRepo.findOne({
+      const folder = await this.prisma.folders.findUnique({
         where: { id: folderId },
-        relations: ['owner']
+        include: { users: true },
       });
 
-      if (!folder || !folder.owner) {
+      if (!folder || !folder.users) {
         throw new NotFoundException('Folder not found');
       }
 
-      if (folder.owner.id === userId) {
+      if (folder.users.id === userId) {
         throw new ForbiddenException('Owner already has access');
       }
 
-      const existingRequest = await this.accessRequestRepo.findOne({
-        where: {
-          requester: { id: userId },
-          folder: { id: folderId },
-          status: 'pending'
-        }
+      const existingRequest = await this.prisma.access_requests.findFirst({
+        where: { requesterId: userId, folderId, status: 'pending' },
       });
 
-      if (existingRequest) {
-        throw new ForbiddenException('Request already pending');
-      }
+      if (existingRequest) throw new ForbiddenException('Request already pending');
 
-      const request = this.accessRequestRepo.create({
-        requester,
-        folder,
-        owner: folder.owner,
-        status: 'pending',
-        message: message || null
+      return this.prisma.access_requests.create({
+        data: {
+          requesterId: userId,
+          folderId,
+          ownerId: folder.users.id,
+          status: 'pending',
+          message: message || null,
+        },
       });
-
-      return this.accessRequestRepo.save(request);
     }
 
-    // =============================
-    // REQUEST FILE ACCESS
-    // =============================
     if (fileId) {
-
-      const file = await this.fileRepo.findOne({
+      const file = await this.prisma.files.findUnique({
         where: { id: fileId },
-        relations: ['folder', 'folder.owner']
+        include: { folders: { include: { users: true } } },
       });
 
-      if (!file || !file.folder || !file.folder.owner) {
+      if (!file || !file.folders || !file.folders.users) {
         throw new NotFoundException('File not found');
       }
 
-      const existingRequest = await this.accessRequestRepo.findOne({
-        where: {
-          requester: { id: userId },
-          file: { id: fileId },
-          status: 'pending'
-        }
+      const existingRequest = await this.prisma.access_requests.findFirst({
+        where: { requesterId: userId, fileId, status: 'pending' },
       });
 
-      if (existingRequest) {
-        throw new ForbiddenException('Request already pending');
-      }
+      if (existingRequest) throw new ForbiddenException('Request already pending');
 
-      const request = this.accessRequestRepo.create({
-        requester,
-        file,
-        owner: file.folder.owner,
-        status: 'pending',
-        message: message || null
+      return this.prisma.access_requests.create({
+        data: {
+          requesterId: userId,
+          fileId,
+          ownerId: file.folders.users.id,
+          status: 'pending',
+          message: message || null,
+        },
       });
-
-      return this.accessRequestRepo.save(request);
     }
   }
 
-  // =============================
-  // USER LIHAT REQUEST SENDIRI
-  // =============================
   async getUserRequests(userId: string) {
-
-    return this.accessRequestRepo.find({
-      where: {
-        requester: { id: userId }
-      },
-      relations: ['folder', 'file'],
-      order: {
-        createdAt: 'DESC'
-      }
+    return this.prisma.access_requests.findMany({
+      where: { requesterId: userId },
+      include: { folders: true, files: true },
+      orderBy: { createdAt: 'desc' },
     });
-
   }
 
-  // =============================
-  // OWNER LIHAT PENDING REQUEST
-  // =============================
   async getPendingRequests(ownerId: string) {
-
-    return this.accessRequestRepo.find({
-      where: {
-        owner: { id: ownerId },
-        status: 'pending'
-      },
-      order: {
-        createdAt: 'DESC'
-      }
+    return this.prisma.access_requests.findMany({
+      where: { ownerId, status: 'pending' },
+      orderBy: { createdAt: 'desc' },
     });
-
   }
 
-  // =============================
-  // OWNER APPROVE REQUEST
-  // =============================
-  async approveRequest(
-    requestId: number,
-    ownerId: string,
-    permissions: any,
-    responseMessage?: string
-  ) {
-
-    const request = await this.accessRequestRepo.findOne({
+  async approveRequest(requestId: number, ownerId: string, permissions: any, responseMessage?: string) {
+    const request = await this.prisma.access_requests.findUnique({
       where: { id: requestId },
-      relations: ['owner', 'requester', 'folder', 'file']
+      include: {
+        users_access_requests_ownerIdTousers: true,
+        users_access_requests_requesterIdTousers: true,
+        folders: true,
+        files: true,
+      },
     });
 
-    if (!request) {
-      throw new NotFoundException('Request not found');
-    }
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.ownerId !== ownerId) throw new ForbiddenException('Not your resource');
 
-    if (request.owner.id !== ownerId) {
-      throw new ForbiddenException('Not your resource');
-    }
-
-    const targetUser = await this.userRepo.findOne({ where: { id: request.requester.id }, relations: ['role'] });
-    const roleName = targetUser?.role?.name?.toLowerCase() || '';
+    const targetUser = request.requesterId
+      ? await this.prisma.users.findUnique({
+          where: { id: request.requesterId },
+          include: { roles: true },
+        })
+      : null;
+    const roleName = (targetUser as any)?.roles?.name?.toLowerCase() || '';
     const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
 
     if (request.request_type === 'delete_confirmation') {
-      request.status = 'approved';
-      request.response_message = responseMessage || 'Persetujuan penghapusan file dikonfirmasi';
-      await this.accessRequestRepo.save(request);
+      await this.prisma.access_requests.update({
+        where: { id: requestId },
+        data: {
+          status: 'approved',
+          response_message: responseMessage || 'Persetujuan penghapusan file dikonfirmasi',
+        },
+      });
 
-      if (request.file) {
-        await this.fileRepo.softRemove(request.file);
+      if (request.fileId) {
+        await this.prisma.files.update({
+          where: { id: request.fileId },
+          data: { deleted_at: new Date() },
+        });
       }
 
       return { message: 'File berhasil dipindahkan ke Recycle Bin' };
     }
 
-    request.status = 'approved';
-    request.response_message = responseMessage || null;
-    request.can_read = permissions?.can_read ?? true;
-    request.can_download = permissions?.can_download ?? false;
-    request.can_create = isDosenOrTendik ? true : (permissions?.can_create ?? false);
-    request.can_update = isDosenOrTendik ? true : (permissions?.can_update ?? false);
-    request.can_delete = isDosenOrTendik ? true : (permissions?.can_delete ?? false);
+    const canRead = permissions?.can_read ?? true;
+    const canDownload = permissions?.can_download ?? false;
+    const canCreate = isDosenOrTendik ? true : (permissions?.can_create ?? false);
+    const canUpdate = isDosenOrTendik ? true : (permissions?.can_update ?? false);
+    const canDelete = isDosenOrTendik ? true : (permissions?.can_delete ?? false);
 
-    await this.accessRequestRepo.save(request);
+    await this.prisma.access_requests.update({
+      where: { id: requestId },
+      data: {
+        status: 'approved',
+        response_message: responseMessage || null,
+        can_read: canRead,
+        can_download: canDownload,
+        can_create: canCreate,
+        can_update: canUpdate,
+        can_delete: canDelete,
+      },
+    });
 
-    if (request.folder) {
-
-      await this.folderPermissionRepo.save({
-        user: request.requester,
-        folder: request.folder,
-        can_read: request.can_read,
-        can_download: request.can_download,
-        can_create: request.can_create,
-        can_update: request.can_update,
-        can_delete: request.can_delete,
+    if (request.folderId) {
+      await this.prisma.folder_permissions.create({
+        data: {
+          user_id: request.requesterId,
+          folder_id: request.folderId,
+          can_read: canRead,
+          can_download: canDownload,
+          can_create: canCreate,
+          can_update: canUpdate,
+          can_delete: canDelete,
+        },
       });
-
-    } else if (request.file) {
-
-      // For file requests, grant read permission on the parent folder
-      // so the user can access the file
-      if (request.file.folder) {
-        await this.folderPermissionRepo.save({
-          user: request.requester,
-          folder: request.file.folder,
+    } else if (request.fileId && request.files?.folder_id) {
+      await this.prisma.folder_permissions.create({
+        data: {
+          user_id: request.requesterId,
+          folder_id: request.files.folder_id,
           can_read: true,
           can_download: permissions?.can_download ?? true,
           can_create: false,
           can_update: false,
           can_delete: false,
-        });
-      }
-
+        },
+      });
     }
 
-    return {
-      message: 'Request approved'
-    };
+    return { message: 'Request approved' };
   }
 
-  // =============================
-  // OWNER REJECT REQUEST
-  // =============================
-  async rejectRequest(
-    requestId: number,
-    ownerId: string,
-    responseMessage?: string
-  ) {
-
-    const request = await this.accessRequestRepo.findOne({
+  async rejectRequest(requestId: number, ownerId: string, responseMessage?: string) {
+    const request = await this.prisma.access_requests.findUnique({
       where: { id: requestId },
-      relations: ['owner']
     });
 
-    if (!request) {
-      throw new NotFoundException('Request not found');
-    }
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.ownerId !== ownerId) throw new ForbiddenException('Not your resource');
 
-    if (request.owner.id !== ownerId) {
-      throw new ForbiddenException('Not your resource');
-    }
-
-    request.status = 'rejected';
-    request.response_message = responseMessage || null;
-
-    return this.accessRequestRepo.save(request);
+    return this.prisma.access_requests.update({
+      where: { id: requestId },
+      data: {
+        status: 'rejected',
+        response_message: responseMessage || null,
+      },
+    });
   }
 
-  // =============================
-  // SUPER ADMIN: LIHAT SEMUA PENDING
-  // =============================
   async getAllPendingRequests() {
-    return this.accessRequestRepo.find({
+    return this.prisma.access_requests.findMany({
       where: { status: 'pending' },
-      order: { createdAt: 'DESC' },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
-  // =============================
-  // NOTIFICATIONS: GABUNGAN DATA
-  // =============================
   async getNotifications(userId: string) {
-    // Cek apakah user adalah admin
-    const user = await this.userRepo.findOne({
+    const user = await this.prisma.users.findUnique({
       where: { id: userId },
-      relations: ['role'],
+      include: { roles: true },
     });
-    const isAdmin = user?.role?.name === 'admin';
+    const isAdmin = user?.roles?.name === 'admin';
 
-    // Notifikasi untuk pemilik folder: pending requests yang ditujukan ke mereka
     const incomingRequests = isAdmin
-      ? await this.accessRequestRepo.find({
+      ? await this.prisma.access_requests.findMany({
           where: { status: 'pending' },
-          order: { createdAt: 'DESC' },
+          include: {
+            users_access_requests_requesterIdTousers: true,
+            folders: true,
+            files: true,
+          },
+          orderBy: { createdAt: 'desc' },
         })
-      : await this.accessRequestRepo.find({
-          where: { owner: { id: userId }, status: 'pending' },
-          order: { createdAt: 'DESC' },
+      : await this.prisma.access_requests.findMany({
+          where: { ownerId: userId, status: 'pending' },
+          include: {
+            users_access_requests_requesterIdTousers: true,
+            folders: true,
+            files: true,
+          },
+          orderBy: { createdAt: 'desc' },
         });
 
-    // Notifikasi untuk requester: request mereka yang sudah di-approve/reject
-    const myUpdatedRequests = await this.accessRequestRepo.find({
-      where: [
-        { requester: { id: userId }, status: 'approved' },
-        { requester: { id: userId }, status: 'rejected' },
-      ],
-      relations: ['folder', 'file', 'requester', 'requester.role'],
-      order: { createdAt: 'DESC' },
+    const myUpdatedRequests = await this.prisma.access_requests.findMany({
+      where: {
+        OR: [
+          { requesterId: userId, status: 'approved' },
+          { requesterId: userId, status: 'rejected' },
+        ],
+      },
+      include: {
+        folders: true,
+        files: true,
+        users_access_requests_requesterIdTousers: { include: { roles: true } },
+      },
+      orderBy: { createdAt: 'desc' },
     });
 
-    // Notifikasi untuk direct share: Folder yang dibagikan langsung tanpa request
-    const directShares = await this.folderPermissionRepo.find({
+    const directShares = await this.prisma.folder_permissions.findMany({
       where: { user_id: userId },
-      relations: ['folder', 'folder.owner'],
-      order: { created_at: 'DESC' },
-      take: 20
-    });
-
-    const filteredDirectShares = directShares.filter(
-      (p) => p.folder && p.folder.owner && p.folder.owner.id !== userId
-    );
-
-    // Notifikasi untuk direct file share via file_permissions
-    const directFileShares = await this.filePermissionRepo.find({
-      where: { user_id: userId },
-      relations: ['file'],
-      order: { created_at: 'DESC' },
+      include: { folders: { include: { users: true } } },
+      orderBy: { created_at: 'desc' },
       take: 20,
     });
 
-    const normalUpdates = myUpdatedRequests.map((r) => ({
-      id: r.id,
-      type: 'update' as const,
-      requesterName: r.requester?.name || 'Unknown',
-      requesterEmail: r.requester?.email || '',
-      resourceName: r.folder?.name || r.file?.name || 'Unknown',
-      resourceType: r.folder ? 'folder' : 'file' as const,
-      status: r.status,
-      response_message: r.response_message || null,
-      createdAt: r.createdAt.toISOString(),
-    }));
+    const filteredDirectShares = directShares.filter(
+      (p) => p.folders && p.folders.users && p.folders.users.id !== userId,
+    );
+
+    const directFileShares = await this.prisma.file_permissions.findMany({
+      where: { user_id: userId },
+      include: { files: true },
+      orderBy: { created_at: 'desc' },
+      take: 20,
+    });
+
+    const normalUpdates = myUpdatedRequests.map((r) => {
+      const requester = r.users_access_requests_requesterIdTousers;
+      return {
+        id: r.id,
+        type: 'update' as const,
+        requesterName: requester?.name || 'Unknown',
+        requesterEmail: requester?.email || '',
+        resourceName: r.folders?.name || r.files?.name || 'Unknown',
+        resourceType: r.folders ? 'folder' : ('file' as const),
+        status: r.status,
+        response_message: r.response_message || null,
+        createdAt: r.createdAt.toISOString(),
+      };
+    });
 
     const directShareUpdates = filteredDirectShares.map((p) => ({
       id: p.id ? Number(p.id.replace(/\D/g, '').substring(0, 8)) + 1000000 : Math.floor(Math.random() * 1000000),
       type: 'update' as const,
-      resourceName: p.folder?.name || 'Unknown',
+      resourceName: p.folders?.name || 'Unknown',
       resourceType: 'folder' as const,
       status: 'approved',
       createdAt: p.created_at.toISOString(),
@@ -377,185 +296,139 @@ export class AccessRequestsService {
     const directFileShareUpdates = directFileShares.map((p) => ({
       id: p.id ? Number(p.id.replace(/\D/g, '').substring(0, 8)) + 2000000 : Math.floor(Math.random() * 1000000),
       type: 'update' as const,
-      resourceName: p.file?.name || 'Unknown',
+      resourceName: p.files?.name || 'Unknown',
       resourceType: 'file' as const,
       status: 'approved',
       createdAt: p.created_at.toISOString(),
     }));
 
-    // Gabungkan notifikasi update dan urutkan berdasarkan waktu
     const allUpdates = [...normalUpdates, ...directShareUpdates, ...directFileShareUpdates].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
 
-
     return {
-      incoming: incomingRequests.map((r) => ({
-        id: r.id,
-        type: 'incoming' as const,
-        requesterName: r.requester?.name || r.requester?.email || 'Unknown',
-        requesterEmail: r.requester?.email || '',
-        resourceName: r.folder?.name || r.file?.name || 'Unknown',
-        resourceType: r.folder ? 'folder' : 'file',
-        status: r.status,
-        message: r.message || null,
-        request_type: r.request_type || 'access',
-        requested_depth: r.requested_depth || null,
-        createdAt: r.createdAt.toISOString(),
-      })),
+      incoming: incomingRequests.map((r) => {
+        const requester = r.users_access_requests_requesterIdTousers;
+        return {
+          id: r.id,
+          type: 'incoming' as const,
+          requesterName: requester?.name || requester?.email || 'Unknown',
+          requesterEmail: requester?.email || '',
+          resourceName: r.folders?.name || r.files?.name || 'Unknown',
+          resourceType: r.folders ? 'folder' : 'file',
+          status: r.status,
+          message: r.message || null,
+          request_type: r.request_type || 'access',
+          requested_depth: r.requested_depth || null,
+          createdAt: r.createdAt.toISOString(),
+        };
+      }),
       updates: allUpdates,
     };
   }
 
-  // =============================
-  // GET SHARED FILES
-  // Role-aware: only returns files where the user has a file_permissions
-  // record matching their current active role (or role_id IS NULL for
-  // unscoped grants). The caller passes activeRoleId from JWT.
-  // Also includes files uploaded by others in the user's own folders.
-  // =============================
   async getSharedFiles(userId: string, activeRoleId: string) {
     const now = new Date();
 
-    // 1. Files shared directly WITH this user for their current active role
-    //    (role_id = activeRoleId) OR role-agnostic grants (role_id IS NULL).
-    const sharedWithMePerms = await this.filePermissionRepo
-      .createQueryBuilder('fp')
-      .innerJoinAndSelect('fp.file', 'file')
-      .leftJoinAndSelect('file.folder', 'folder')
-      .leftJoinAndSelect('file.uploaded_by_role', 'uploadedByRole')
-      .leftJoinAndSelect('file.owner', 'owner')
-      .leftJoinAndSelect('owner.role', 'ownerRole')
-      .where('fp.user_id = :userId', { userId })
-      .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
-      .andWhere('fp.can_read = true')
-      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('file.deleted_at IS NULL')
-      .getMany();
+    const sharedWithMePerms = await this.prisma.file_permissions.findMany({
+      where: {
+        user_id: userId,
+        OR: [{ role_id: activeRoleId }, { role_id: null }],
+        can_read: true,
+        AND: [{ OR: [{ expires_at: null }, { expires_at: { gt: now } }] }],
+        files: { deleted_at: null },
+      },
+      include: {
+        files: {
+          include: {
+            folders: true,
+            roles: true,
+            users: true,
+          },
+        },
+      },
+    });
 
-    // 2. Files uploaded by OTHERS in the user's own folders
-    const othersFilesInMyFolders = await this.fileRepo.createQueryBuilder('file')
-      .innerJoinAndSelect('file.folder', 'folder')
-      .leftJoinAndSelect('file.owner', 'owner')
-      .leftJoinAndSelect('owner.role', 'role')
-      .leftJoinAndSelect('file.uploaded_by_role', 'uploadedByRole')
-      .where('folder.owner_id = :userId', { userId })
-      .andWhere('file.owner_id != :userId', { userId })
-      .andWhere('file.deleted_at IS NULL')
-      .andWhere('folder.deleted_at IS NULL')
-      .getMany();
+    const othersFilesInMyFolders = await this.prisma.files.findMany({
+      where: {
+        folders: { owner_id: userId, deleted_at: null },
+        owner_id: { not: userId },
+        deleted_at: null,
+      },
+      include: {
+        folders: true,
+        users: true,
+        roles: true,
+      },
+    });
 
     const resultFiles = new Map<string, any>();
-    const me = await this.userRepo.findOne({ where: { id: userId }, relations: ['role'] });
 
-    // Process sharedWithMe
     for (const perm of sharedWithMePerms) {
-      const file = perm.file;
+      const file = perm.files;
       if (!file) continue;
-      if (file.owner_id === userId) continue; // skip own files
+      if (file.owner_id === userId) continue;
 
       if (!resultFiles.has(file.id)) {
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
           mime_type: file.mime_type,
-          size: file.size,
+          size: Number(file.size),
           created_at: file.created_at,
           updated_at: file.updated_at,
           owner_id: file.owner_id,
-          owner_name: (file.owner as any)?.name || 'Unknown',
-          owner_email: (file.owner as any)?.email || '(email tidak tersedia)',
-          owner_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by: (file.owner as any)?.name || 'Unknown',
-          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
+          owner_name: file.users?.name || 'Unknown',
+          owner_email: file.users?.email || '(email tidak tersedia)',
+          owner_role: file.roles?.name ?? null,
+          uploaded_by: file.users?.name || 'Unknown',
+          uploaded_by_role: file.roles?.name ?? null,
+          uploaded_by_role_id: file.uploaded_by_role_id ?? null,
           can_read: perm.can_read,
           can_download: perm.can_download,
           can_create: false,
           can_update: false,
           can_delete: false,
           folder_id: file.folder_id ?? null,
-          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
-          // Expose which role_id this share targets so the frontend can show context
+          folder: file.folders ? { id: file.folders.id, name: file.folders.name } : null,
           shared_for_role_id: perm.role_id ?? null,
         });
       }
     }
 
-    // Process othersFilesInMyFolders
     for (const file of othersFilesInMyFolders) {
       if (!resultFiles.has(file.id)) {
         resultFiles.set(file.id, {
           id: file.id,
           name: file.name,
           mime_type: file.mime_type,
-          size: file.size,
+          size: Number(file.size),
           created_at: file.created_at,
           updated_at: file.updated_at,
           owner_id: file.owner_id,
-          owner_name: file.owner?.name || 'Unknown',
-          owner_email: file.owner?.email || '(email tidak tersedia)',
-          owner_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by: file.owner?.name || 'Unknown',
-          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
+          owner_name: file.users?.name || 'Unknown',
+          owner_email: file.users?.email || '(email tidak tersedia)',
+          owner_role: file.roles?.name ?? null,
+          uploaded_by: file.users?.name || 'Unknown',
+          uploaded_by_role: file.roles?.name ?? null,
+          uploaded_by_role_id: file.uploaded_by_role_id ?? null,
           can_read: true,
           can_download: true,
           can_create: true,
           can_update: true,
           can_delete: true,
           folder_id: file.folder_id ?? null,
-          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
+          folder: file.folders ? { id: file.folders.id, name: file.folders.name } : null,
           shared_for_role_id: null,
         });
       }
     }
 
-    // Batch-fetch missing folder names
-    const missingFolderIds = [...new Set(
-      Array.from(resultFiles.values())
-        .filter(f => !f.folder && f.folder_id)
-        .map(f => f.folder_id)
-    )];
-    if (missingFolderIds.length > 0) {
-      const folders = await this.folderRepo.findByIds(missingFolderIds);
-      const folderMap = new Map(folders.map(f => [f.id, { id: f.id, name: f.name }]));
-      for (const [id, file] of resultFiles) {
-        if (!file.folder && file.folder_id && folderMap.has(file.folder_id)) {
-          resultFiles.set(id, { ...file, folder: folderMap.get(file.folder_id) });
-        }
-      }
-    }
-
-    // Batch-fetch missing role names
-    const missingRoleIds = [...new Set(
-      Array.from(resultFiles.values())
-        .filter(f => !f.owner_role && f.uploaded_by_role_id)
-        .map(f => f.uploaded_by_role_id)
-    )];
-    if (missingRoleIds.length > 0) {
-      const roles = await this.roleRepository.findByIds(missingRoleIds);
-      const roleMap = new Map(roles.map(r => [r.id, r.name]));
-      for (const [id, file] of resultFiles) {
-        if (!file.owner_role && file.uploaded_by_role_id && roleMap.has(file.uploaded_by_role_id)) {
-          const roleName = roleMap.get(file.uploaded_by_role_id);
-          resultFiles.set(id, { ...file, owner_role: roleName, uploaded_by_role: roleName });
-        }
-      }
-    }
-
     const filesArray = Array.from(resultFiles.values());
     filesArray.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-
     return filesArray;
   }
 
-  // =============================
-  // DIRECT FILE SHARE (BY OWNER)
-  // Stores one file_permissions record per (user_id, role_id) pair so that
-  // access is gated to the exact role the sharer selected — consistent with
-  // how folder Spesifik User Permission works.
-  // =============================
   async directShareFile(
     fileId: string,
     data: {
@@ -567,29 +440,40 @@ export class AccessRequestsService {
       }>;
       message?: string;
     },
-    requester: User & { active_role_id?: string; active_role_name?: string },
+    requester: any,
   ) {
-    const file = await this.fileRepo.findOne({
+    const file = await this.prisma.files.findUnique({
       where: { id: fileId },
-      relations: ['folder', 'folder.owner', 'uploaded_by_role'],
+      include: {
+        folders: { include: { users: true } },
+        roles: true,
+      },
     });
 
-    if (!file) {
-      throw new NotFoundException('File not found');
-    }
+    if (!file) throw new NotFoundException('File not found');
 
-    const allowed = await canShareOrModifyFile(
-      file as any,
-      requester as any,
-      { roleRepo: this.roleRepository },
-    );
-    if (!allowed) {
-      throw new ForbiddenException('Anda tidak berhak men-share file ini');
-    }
+    const fileLike = {
+      id: file.id,
+      owner_id: file.owner_id,
+      folder_id: file.folder_id,
+      uploaded_by_role_id: file.uploaded_by_role_id,
+      folder: file.folders
+        ? { owner_id: file.folders.owner_id, role_id: file.folders.role_id }
+        : null,
+      uploaded_by_role: file.roles ? { name: file.roles.name } : null,
+    };
 
-    // Build the target set of (user_id, role_id) pairs from the payload.
-    // Each entry represents one role context for one user.
-    const targetEntries: Array<{ user_id: string; role_id: string | null; can_read: boolean; can_download: boolean }> = [];
+    const allowed = await canShareOrModifyFile(fileLike, requester, {
+      findRole: (id) => this.prisma.roles.findUnique({ where: { id } }),
+    });
+    if (!allowed) throw new ForbiddenException('Anda tidak berhak men-share file ini');
+
+    const targetEntries: Array<{
+      user_id: string;
+      role_id: string | null;
+      can_read: boolean;
+      can_download: boolean;
+    }> = [];
 
     if (data.user_permissions) {
       for (const p of data.user_permissions) {
@@ -602,60 +486,55 @@ export class AccessRequestsService {
       }
     }
 
-    // Sync: remove entries that are no longer in the target list
-    const existingPerms = await this.filePermissionRepo.find({
+    const existingPerms = await this.prisma.file_permissions.findMany({
       where: { file_id: fileId },
     });
 
     for (const ep of existingPerms) {
       const stillTarget = targetEntries.some(
-        t => t.user_id === ep.user_id && (t.role_id ?? null) === ep.role_id,
+        (t) => t.user_id === ep.user_id && (t.role_id ?? null) === ep.role_id,
       );
       if (!stillTarget) {
-        await this.filePermissionRepo.delete(ep.id);
+        await this.prisma.file_permissions.delete({ where: { id: ep.id } });
       }
     }
 
-    // Upsert each target entry
     let count = 0;
     for (const entry of targetEntries) {
       const existing = existingPerms.find(
-        ep => ep.user_id === entry.user_id && ep.role_id === (entry.role_id ?? null),
+        (ep) => ep.user_id === entry.user_id && ep.role_id === (entry.role_id ?? null),
       );
 
       if (existing) {
-        await this.filePermissionRepo.update(existing.id, {
-          can_read: entry.can_read,
-          can_download: entry.can_download,
+        await this.prisma.file_permissions.update({
+          where: { id: existing.id },
+          data: { can_read: entry.can_read, can_download: entry.can_download },
         });
       } else {
-        await this.filePermissionRepo.save(
-          this.filePermissionRepo.create({
+        await this.prisma.file_permissions.create({
+          data: {
             file_id: fileId,
             user_id: entry.user_id,
             role_id: entry.role_id,
             can_read: entry.can_read,
             can_download: entry.can_download,
-          }),
-        );
+          },
+        });
       }
       count++;
 
-      // Ensure the user can "see" the parent folder to list this file.
-      // Only create a role-scoped folder permission if role_id is provided —
-      // this is the same scoping logic as folder Spesifik User Permission.
       const roleIdForFolder = entry.role_id;
-      const existingFolderPerm = await this.folderPermissionRepo.findOne({
+      const existingFolderPerm = await this.prisma.folder_permissions.findFirst({
         where: {
           user_id: entry.user_id,
           folder_id: file.folder_id,
-          role_id: roleIdForFolder === null ? IsNull() : roleIdForFolder,
+          role_id: roleIdForFolder,
         },
       });
 
       if (!existingFolderPerm) {
-        await this.folderPermissionRepo.save(
-          this.folderPermissionRepo.create({
+        await this.prisma.folder_permissions.create({
+          data: {
             user_id: entry.user_id,
             folder_id: file.folder_id,
             role_id: roleIdForFolder,
@@ -664,28 +543,21 @@ export class AccessRequestsService {
             can_create: false,
             can_update: false,
             can_delete: false,
-          }),
-        );
+          },
+        });
       }
     }
 
-    return {
-      message: `${count} entri akses file berhasil disimpan`,
-      count,
-    };
+    return { message: `${count} entri akses file berhasil disimpan`, count };
   }
 
-  // =============================
-  // GET FILE SHARES
-  // Returns all active file_permissions for a file, with user and role info.
-  // =============================
   async getFileShares(fileId: string) {
-    const perms = await this.filePermissionRepo.find({
+    const perms = await this.prisma.file_permissions.findMany({
       where: { file_id: fileId },
-      relations: ['user', 'role'],
+      include: { users: true, roles: true },
     });
 
-    return perms.map(p => ({
+    return perms.map((p) => ({
       id: p.id,
       file_id: p.file_id,
       user_id: p.user_id,
@@ -694,88 +566,70 @@ export class AccessRequestsService {
       can_download: p.can_download,
       expires_at: p.expires_at,
       created_at: p.created_at,
-      // Expose nested user and role so the frontend can reconstruct state
-      user: p.user
-        ? { id: p.user.id, name: (p.user as any).name, email: (p.user as any).email }
-        : null,
-      role: p.role
-        ? { id: p.role.id, name: (p.role as any).name }
-        : null,
+      user: p.users ? { id: p.users.id, name: p.users.name, email: p.users.email } : null,
+      role: p.roles ? { id: p.roles.id, name: p.roles.name } : null,
     }));
   }
 
-  // =============================
-  // USER REQUEST HIERARCHY INCREASE
-  // =============================
   async requestHierarchyIncrease(
     userId: string,
     requestedDepth: number,
     message?: string,
     activeRoleId?: string,
   ) {
-    const requester = await this.userRepo.findOne({
+    const requester = await this.prisma.users.findUnique({
       where: { id: userId },
-      relations: ['role'],
+      include: { roles: true },
     });
     if (!requester) throw new NotFoundException('User not found');
 
     const roleIdToCheck = activeRoleId || requester.role_id;
     const activeRole = roleIdToCheck
-      ? await this.roleRepository.findOne({ where: { id: roleIdToCheck } })
-      : requester.role;
+      ? await this.prisma.roles.findUnique({ where: { id: roleIdToCheck } })
+      : requester.roles;
 
     if (activeRole?.is_private) {
       throw new ForbiddenException('Role ini tidak diizinkan untuk request tambah kedalaman folder');
     }
 
-    const adminRole = await this.roleRepository.findOne({
-      where: [
-        { name: 'Super Admin' as any },
-        { name: 'admin' as any },
-        { name: 'superadmin' as any },
-        { name: 'super admin' as any }
-      ]
+    const adminRole = await this.prisma.roles.findFirst({
+      where: {
+        OR: [
+          { name: 'Super Admin' },
+          { name: 'admin' },
+          { name: 'superadmin' },
+          { name: 'super admin' },
+        ],
+      },
     });
     if (!adminRole) throw new NotFoundException('Admin role not found');
 
-    const adminUser = await this.userRepo.findOne({ where: { role_id: adminRole.id } });
+    const adminUser = await this.prisma.users.findFirst({ where: { role_id: adminRole.id } });
     if (!adminUser) throw new NotFoundException('Admin user not found');
 
-    const existing = await this.accessRequestRepo.findOne({
-      where: {
-        requester: { id: userId },
-        request_type: 'hierarchy',
-        status: 'pending',
-      },
+    const existing = await this.prisma.access_requests.findFirst({
+      where: { requesterId: userId, request_type: 'hierarchy', status: 'pending' },
     });
 
     if (existing) {
       throw new ForbiddenException('Anda sudah memiliki request hierarki yang masih pending');
     }
 
-    const request = this.accessRequestRepo.create({
-      requester,
-      owner: adminUser,
-      status: 'pending',
-      request_type: 'hierarchy',
-      requested_depth: requestedDepth,
-      message: message || `Request tambah kedalaman folder ke ${requestedDepth} level`,
+    return this.prisma.access_requests.create({
+      data: {
+        requesterId: userId,
+        ownerId: adminUser.id,
+        status: 'pending',
+        request_type: 'hierarchy',
+        requested_depth: requestedDepth,
+        message: message || `Request tambah kedalaman folder ke ${requestedDepth} level`,
+      },
     });
-
-    return this.accessRequestRepo.save(request);
   }
 
-  // =============================
-  // ADMIN APPROVE HIERARCHY REQUEST
-  // =============================
-  async approveHierarchyRequest(
-    requestId: number,
-    adminId: string,
-    responseMessage?: string,
-  ) {
-    const request = await this.accessRequestRepo.findOne({
+  async approveHierarchyRequest(requestId: number, adminId: string, responseMessage?: string) {
+    const request = await this.prisma.access_requests.findUnique({
       where: { id: requestId },
-      relations: ['requester'],
     });
 
     if (!request) throw new NotFoundException('Request not found');
@@ -783,28 +637,25 @@ export class AccessRequestsService {
       throw new ForbiddenException('This is not a hierarchy request');
     }
 
-    request.status = 'approved';
-    request.response_message = responseMessage || null;
-    await this.accessRequestRepo.save(request);
+    await this.prisma.access_requests.update({
+      where: { id: requestId },
+      data: { status: 'approved', response_message: responseMessage || null },
+    });
 
-    if (request.requested_depth) {
-      request.requester.max_folder_depth = request.requested_depth;
-      await this.userRepo.save(request.requester);
+    if (request.requested_depth && request.requesterId) {
+      await this.prisma.users.update({
+        where: { id: request.requesterId },
+        data: { max_folder_depth: request.requested_depth },
+      });
     }
 
     return { message: 'Hierarchy request approved' };
   }
 
-  // =============================
-  // GET PENDING HIERARCHY REQUESTS (for admin)
-  // =============================
   async getPendingHierarchyRequests() {
-    return this.accessRequestRepo.find({
-      where: {
-        request_type: 'hierarchy',
-        status: 'pending',
-      },
-      order: { createdAt: 'DESC' },
+    return this.prisma.access_requests.findMany({
+      where: { request_type: 'hierarchy', status: 'pending' },
+      orderBy: { createdAt: 'desc' },
     });
   }
 }

@@ -1,5 +1,6 @@
 import { IsBoolean, IsIn, IsOptional, IsString, Length, Matches } from 'class-validator';
-import type { PermissionVisibility } from '../../../entities';
+
+type PermissionVisibility = 'internal' | 'public' | 'hidden';
 
 export class CreatePermissionDto {
   // slug = module.action (or module.submodule.action). Lowercase, dot-separated.
