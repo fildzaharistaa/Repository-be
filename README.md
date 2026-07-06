@@ -13,6 +13,18 @@ Backend API untuk Campus Repository System FIK UPNVJ. Dibangun dengan NestJS 11 
 
 ---
 
+## Prerequisites
+
+Sebelum memulai, pastikan sudah terinstal:
+
+| Software | Versi Minimum | Keterangan |
+|----------|--------------|------------|
+| **Node.js** | 18.x | Runtime JavaScript |
+| **npm** | 9.x | Package manager (bundled dengan Node.js) |
+| **PostgreSQL** | 12+ | Database relasional |
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -21,19 +33,19 @@ graph TD
     Guard["Guards Layer\nJwtAuthGuard | PermissionsGuard\nFolderPermissionGuard"]
     Controller["Controllers\n(14 modules)"]
     Service["Services\n(Business Logic)"]
-    TypeORM["TypeORM"]
+    Prisma["Prisma ORM"]
     PG[(PostgreSQL)]
     FS["File System\n./uploads"]
 
     Client --> Guard
     Guard --> Controller
     Controller --> Service
-    Service --> TypeORM
-    TypeORM --> PG
+    Service --> Prisma
+    Prisma --> PG
     Service --> FS
 ```
 
-NestJS menggunakan **pola modular**: setiap fitur terisolasi dalam module sendiri dengan controller, service, dan entity-nya. Guards diterapkan secara global via `APP_GUARD` di `AppModule`.
+NestJS menggunakan **pola modular**: setiap fitur terisolasi dalam module sendiri dengan controller, service, dan DTO-nya. Guards diterapkan secara global via `APP_GUARD` di `AppModule`.
 
 ---
 
@@ -45,7 +57,9 @@ NestJS menggunakan **pola modular**: setiap fitur terisolasi dalam module sendir
 | **TypeScript** | 5.7.3 | Type-safe JavaScript |
 | **Node.js** | 18+ | Runtime |
 | **PostgreSQL** | 12+ | Database relasional |
-| **TypeORM** | 0.3.28 | ORM untuk PostgreSQL |
+| **Prisma** | 7.8.0 | ORM & Database Toolkit |
+| **@prisma/adapter-pg** | 7.8.0 | PostgreSQL adapter untuk Prisma |
+| **pg** | 8.22.0 | PostgreSQL driver |
 | **Passport** | 0.7.0 | Middleware autentikasi |
 | **passport-jwt** | - | JWT strategy |
 | **passport-local** | - | Local (email/password) strategy |
@@ -367,6 +381,9 @@ DB_USERNAME=postgres
 DB_PASSWORD=your_database_password
 DB_NAME=repository
 
+# Prisma — Connection String (wajib)
+DATABASE_URL=postgresql://postgres:your_database_password@localhost:5432/repository?schema=public
+
 # JWT Authentication
 JWT_SECRET=your-super-secret-jwt-key-change-in-production-min-32-chars
 JWT_EXPIRES_IN=24h
@@ -384,6 +401,46 @@ JWT_EXPIRES_IN=24h
 | `DB_NAME` | Ya | Nama database |
 | `JWT_SECRET` | Ya | Secret key JWT — **wajib diganti di production**, minimal 32 karakter |
 | `JWT_EXPIRES_IN` | Tidak | Masa berlaku token (default: `24h`) |
+| `DATABASE_URL` | Ya | Connection string PostgreSQL untuk Prisma. Format: `postgresql://user:password@host:port/dbname?schema=public` |
+
+---
+
+## Quick Start (Local Development)
+
+Urutan lengkap dari nol hingga server berjalan:
+
+```bash
+# 1. Masuk ke direktori backend
+cd Repository-be
+
+# 2. Install dependencies
+npm install
+
+# 3. Salin template environment dan isi nilainya
+cp env.example .env
+# Edit .env — minimal isi DB_USERNAME, DB_PASSWORD, DATABASE_URL, JWT_SECRET, CORS_ORIGIN
+
+# 4. Buat database di PostgreSQL
+psql -U postgres -c "CREATE DATABASE repository;"
+
+# 5. Generate Prisma Client
+npx prisma generate
+
+# 6. Inisialisasi schema & seed roles
+psql -U postgres -d repository -f create-database.sql
+psql -U postgres -d repository -f seed-roles.sql
+
+# 7. Buat super admin pertama
+node scripts/create-admin.js
+
+# 8. Buat folder uploads
+mkdir uploads
+
+# 9. Jalankan server development
+npm run start:dev
+```
+
+Server berjalan di `http://localhost:3031/api`.
 
 ---
 
@@ -406,25 +463,57 @@ CREATE DATABASE repository;
 \q
 ```
 
-### 2. Konfigurasi TypeORM
+### 2. Generate Prisma Client
 
-TypeORM dikonfigurasi dengan `synchronize: true` — schema database akan **otomatis dibuat/diperbarui** saat aplikasi pertama kali dijalankan.
+Setelah database dibuat, generate Prisma Client agar type-safe queries tersedia:
 
-> **Penting untuk Production:** Set `synchronize: false` dan gunakan TypeORM migrations untuk menghindari data loss.
+```bash
+npx prisma generate
+```
 
-### 3. Seed Data Awal
+### 3. Inisialisasi Schema Database
+
+Jika database kosong, jalankan script inisialisasi SQL:
+
+```bash
+psql -U postgres -d repository -f create-database.sql
+```
+
+Atau, jika migration files tersedia di `prisma/migrations/`:
+
+```bash
+npx prisma migrate deploy
+```
+
+### 4. Seed Data Awal
 
 ```bash
 psql -U postgres -d repository -f seed-roles.sql
 ```
 
-### 4. Buat Folder Uploads
+### 5. Buat Folder Uploads
 
 ```bash
 mkdir uploads
 # Linux/Mac:
 chmod 755 uploads
 ```
+
+### 6. Buat Super Admin Pertama
+
+Setelah database siap, buat akun super admin untuk pertama kali login:
+
+```bash
+node scripts/create-admin.js
+```
+
+Default credentials: `admin@example.com` / `admin123`. Untuk custom:
+
+```bash
+ADMIN_EMAIL=admin@univ.ac.id ADMIN_PASSWORD=rahasia123 ADMIN_NAME="Admin Utama" node scripts/create-admin.js
+```
+
+> **Wajib ganti password** segera setelah login pertama kali.
 
 ---
 
@@ -455,11 +544,19 @@ npm run start:debug    # Development dengan debug mode
 npm run start:prod     # Production (jalankan dist/main.js)
 npm run build          # Build TypeScript ke dist/
 npm run lint           # ESLint + auto-fix
-npm run format         # Prettier formatting
 npm run test           # Unit tests (Jest)
 npm run test:watch     # Test dengan watch mode
 npm run test:cov       # Test dengan coverage report
 npm run test:e2e       # End-to-end tests
+```
+
+**Prisma commands** (jalankan di dalam `Repository-be/`):
+
+```bash
+npx prisma generate          # Generate Prisma Client dari schema
+npx prisma migrate deploy    # Jalankan pending migrations (production)
+npx prisma migrate dev       # Buat & jalankan migration baru (development)
+npx prisma studio            # Buka GUI database browser
 ```
 
 ---
@@ -470,28 +567,57 @@ npm run test:e2e       # End-to-end tests
 
 1. Push `Repository-be` ke GitHub repository
 2. Buat project baru di [railway.app](https://railway.app)
-3. Add PostgreSQL service dari Railway
+3. Add **PostgreSQL** service dari Railway — Railway otomatis menyediakan `DATABASE_URL`
 4. Deploy dari GitHub repository
-5. Set environment variables di Railway dashboard
-6. Set start command: `node dist/main.js`
-7. Set build command: `npm install && npm run build`
+5. Set environment variables di Railway dashboard (lihat seksi [Environment Variables](#environment-variables)):
+   - `DATABASE_URL` — gunakan nilai dari Railway PostgreSQL service
+   - `JWT_SECRET` — string random minimal 32 karakter
+   - `CORS_ORIGIN` — URL frontend production
+   - `NODE_ENV=production`
+6. Set **Build command:** `npm install && npx prisma generate && npm run build`
+7. Set **Start command:** `node dist/main.js`
+8. Setelah deploy pertama, jalankan database setup via Railway shell:
+   ```bash
+   psql $DATABASE_URL -f create-database.sql
+   psql $DATABASE_URL -f seed-roles.sql
+   ADMIN_EMAIL=admin@univ.ac.id ADMIN_PASSWORD=rahasia123 node scripts/create-admin.js
+   ```
 
 ### VPS (Ubuntu/Debian)
 
 ```bash
-# Install Node.js 18+
+# 1. Install Node.js 18+
 curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install nodejs
+sudo apt install -y nodejs
 
+# 2. Install PM2
 npm install -g pm2
+
+# 3. Masuk ke direktori backend & install dependencies
 cd Repository-be
 npm install
+
+# 4. Konfigurasi environment
+cp env.example .env
+nano .env  # isi DB_*, DATABASE_URL, JWT_SECRET, CORS_ORIGIN, NODE_ENV=production
+
+# 5. Generate Prisma Client
+npx prisma generate
+
+# 6. Setup database (pastikan PostgreSQL sudah berjalan & database sudah dibuat)
+psql -U postgres -d repository -f create-database.sql
+psql -U postgres -d repository -f seed-roles.sql
+
+# 7. Buat super admin pertama
+ADMIN_EMAIL=admin@univ.ac.id ADMIN_PASSWORD=rahasia123 node scripts/create-admin.js
+
+# 8. Build aplikasi
 npm run build
 
-cp .env.example .env
-# Edit .env sesuai production
-
+# 9. Buat folder uploads
 mkdir -p uploads && chmod 755 uploads
+
+# 10. Jalankan dengan PM2
 pm2 start dist/main.js --name "repository-be"
 pm2 save && pm2 startup
 ```
@@ -522,10 +648,21 @@ server {
 ```dockerfile
 FROM node:18-alpine
 WORKDIR /app
+
+# Copy package files dan prisma schema dulu untuk layer caching
 COPY package*.json ./
-RUN npm ci --only=production
+COPY prisma ./prisma/
+
+# Install semua deps (termasuk devDeps untuk build & prisma generate)
+RUN npm ci
+
+# Generate Prisma Client
+RUN npx prisma generate
+
+# Copy source dan build
 COPY . .
 RUN npm run build
+
 RUN mkdir -p uploads
 EXPOSE 3031
 CMD ["node", "dist/main.js"]
@@ -537,6 +674,43 @@ docker run -d -p 3031:3031 --env-file .env \
   -v $(pwd)/uploads:/app/uploads \
   --name repository-be repository-be
 ```
+
+> **Catatan:** Database setup (create-database.sql, seed-roles.sql, create-admin.js) tetap perlu dijalankan manual sekali sebelum container pertama kali dipakai.
+
+---
+
+## Common Issues
+
+### `PrismaClientInitializationError` saat start
+**Penyebab:** `DATABASE_URL` tidak diset atau format salah.
+**Solusi:** Pastikan `.env` berisi `DATABASE_URL` yang valid dan jalankan `npx prisma generate`.
+
+### `Cannot find module '@prisma/client'`
+**Penyebab:** `npx prisma generate` belum dijalankan setelah `npm install`.
+**Solusi:**
+```bash
+npx prisma generate
+```
+
+### Error `role "admin" not found` saat `create-admin.js`
+**Penyebab:** `create-database.sql` atau `seed-roles.sql` belum dijalankan.
+**Solusi:** Jalankan kedua script SQL terlebih dahulu (lihat seksi Database Setup).
+
+### Port 3031 sudah dipakai
+**Penyebab:** Proses lain berjalan di port 3031.
+**Solusi:** Ubah `PORT` di `.env` atau matikan proses yang memakai port tersebut:
+```bash
+# Linux/Mac
+lsof -ti:3031 | xargs kill
+```
+
+### CORS Error dari frontend
+**Penyebab:** `CORS_ORIGIN` tidak sesuai dengan URL frontend.
+**Solusi:** Set `CORS_ORIGIN` di `.env` dengan URL frontend yang tepat, termasuk port. Contoh: `CORS_ORIGIN=http://localhost:3000`.
+
+### Upload file gagal / 413 Payload Too Large
+**Penyebab:** File melebihi batas ukuran di Nginx atau multer.
+**Solusi:** Tambahkan `client_max_body_size 500M;` di konfigurasi Nginx (lihat seksi Deployment).
 
 ---
 
@@ -729,8 +903,15 @@ Authorization: Bearer <jwt_token>
 ## Project Structure
 
 ```
+prisma/
+├── schema.prisma                # Schema database Prisma (13 models)
+└── migrations/                  # Prisma migration files
+prisma.config.ts                 # Konfigurasi path Prisma & adapter
+
 src/
-├── entities/                    # TypeORM entities (13 entities)
+├── prisma/                      # Prisma service & module
+│   ├── prisma.service.ts        # PrismaService (extends PrismaClient)
+│   └── prisma.module.ts         # Global PrismaModule
 ├── auth/                        # Modul autentikasi
 ├── users/                       # Modul user management
 ├── roles/                       # Modul roles
