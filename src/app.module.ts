@@ -21,11 +21,8 @@ import { RecycleBinModule } from './recycle-bin/recycle-bin.module';
 import { SettingsModule } from './settings/settings.module';
 import { CronModule } from './cron/cron.module';
 import { SuperAdminModule } from './super-admin/super-admin.module';
-<<<<<<< HEAD
 import { IntegrationModule } from './integration/integration.module';
-=======
 import { ShareLinksModule } from './share-links/share-links.module';
->>>>>>> 881bc03b2e05efa6464e446ece5ba0ab6f228fd6
 
 @Module({
   imports: [
@@ -52,11 +49,8 @@ import { ShareLinksModule } from './share-links/share-links.module';
     SettingsModule,
     CronModule,
     SuperAdminModule,
-<<<<<<< HEAD
     IntegrationModule,
-=======
     ShareLinksModule,
->>>>>>> 881bc03b2e05efa6464e446ece5ba0ab6f228fd6
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
