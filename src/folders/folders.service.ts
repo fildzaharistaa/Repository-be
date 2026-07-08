@@ -265,7 +265,7 @@ export class FoldersService {
               role_id: role.id,
               can_read: true,
               can_download: canDownload,
-              can_create: isDosenOrTendik,
+              can_create: true,
               can_update: isDosenOrTendik,
               can_delete: isDosenOrTendik,
             });
@@ -734,7 +734,7 @@ export class FoldersService {
             role_id: roleId,
             can_read: true,
             can_download: canDownload,
-            can_create: isDosenOrTendik,
+            can_create: true,
             can_update: isDosenOrTendik,
             can_delete: isDosenOrTendik,
           });
@@ -804,7 +804,7 @@ export class FoldersService {
             role_id: roleId,
             can_read: true,
             can_download: canDownload,
-            can_create: isDosenOrTendik,
+            can_create: true,
             can_update: isDosenOrTendik,
             can_delete: isDosenOrTendik,
           });
