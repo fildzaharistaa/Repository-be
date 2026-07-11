@@ -82,6 +82,8 @@ export class FilesController {
     return this.filesService.findOne(id, req.user);
   }
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('file.view')
   @Get(':id/preview')
   async preview(
     @Param('id') id: string,

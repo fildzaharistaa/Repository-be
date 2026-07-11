@@ -13,6 +13,7 @@ interface FolderOverviewItem {
   file_count: number;
   storage_size: number;
   updated_at: Date;
+  owner_id: string | null;
   owner_name: string | null;
   owner_email: string | null;
   owner_role: string | null;
@@ -343,6 +344,7 @@ export class StatsController {
           file_count: parseInt(fileStats?.count ?? '0', 10),
           storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
           updated_at: root.updated_at,
+          owner_id: root.owner_id ?? null,
           owner_name: root.owner?.name ?? null,
           owner_email: root.owner?.email ?? null,
           owner_role: root.role?.name ?? null,
@@ -374,7 +376,7 @@ export class StatsController {
     // Fetch all accessible folders for BFS
     const allAccessibleFolders = await this.folderRepository.find({
       where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
-      select: ['id', 'name', 'parent_id', 'updated_at'],
+      select: ['id', 'name', 'parent_id', 'updated_at', 'owner_id'],
     });
 
     // Build parent → children map
@@ -425,6 +427,7 @@ export class StatsController {
           file_count: parseInt(fileStats?.count ?? '0', 10),
           storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
           updated_at: child.updated_at,
+          owner_id: child.owner_id ?? null,
           owner_name: null,
           owner_email: null,
           owner_role: null,
