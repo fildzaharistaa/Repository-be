@@ -8,6 +8,7 @@ import { File } from '../entities/file.entity';
 import { User } from '../entities/user.entity';
 import { Role } from '../entities/role.entity';
 import { FolderPermission } from '../entities/folder-permission.entity';
+import { FilePermission } from '../entities/file-permission.entity';
 import { SystemSetting } from '../entities/system-setting.entity';
 
 @Module({
@@ -19,6 +20,7 @@ import { SystemSetting } from '../entities/system-setting.entity';
       User,
       Role,
       FolderPermission,
+      FilePermission,
       SystemSetting,
     ])
   ],

@@ -11,7 +11,6 @@ import { RolesModule } from './roles/roles.module';
 import { FoldersModule } from './folders/folders.module';
 import { FilesModule } from './files/files.module';
 import { PermissionsModule } from './permissions/permissions.module';
-import { ChatbotModule } from './chatbot/chatbot.module';
 import { AccessRequestsModule } from './access-requests/access-requests.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import databaseConfig from './config/database.config';
@@ -43,7 +42,6 @@ import { IntegrationModule } from './integration/integration.module';
     FoldersModule,
     FilesModule,
     PermissionsModule,
-    ChatbotModule,
     AccessRequestsModule,
     SearchModule,
     StatsModule,

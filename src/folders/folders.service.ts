@@ -256,16 +256,25 @@ export class FoldersService {
             where: { folder_id: savedFolder.id, role_id: role.id },
           });
 
+          // Respect per-role download setting from role_download_map (keyed by role ID)
+          const canDownload = createFolderDto.role_download_map?.[role.id] ?? false;
+
           if (!existing) {
             await this.permissionRepository.save({
               folder_id: savedFolder.id,
               role_id: role.id,
               can_read: true,
-              can_download: false,
-              can_create: isDosenOrTendik,
+              can_download: canDownload,
+              can_create: true,
               can_update: isDosenOrTendik,
               can_delete: isDosenOrTendik,
             });
+          } else {
+            // Update can_download when role_download_map is explicitly provided
+            if (createFolderDto.role_download_map !== undefined) {
+              existing.can_download = canDownload;
+              await this.permissionRepository.save(existing);
+            }
           }
         }
       }
@@ -692,6 +701,7 @@ export class FoldersService {
     addedRoleIds: string[],
     removedRoleIds: string[],
     ownerRoleId: string | null,
+    roleDownloadMap: Record<string, boolean> = {},
   ): Promise<void> {
     if (!addedRoleIds.length && !removedRoleIds.length) return;
     const children = await this.folderRepository.find({
@@ -714,6 +724,8 @@ export class FoldersService {
         const existing = await this.permissionRepository.findOne({
           where: { folder_id: child.id, role_id: roleId, user_id: IsNull() },
         });
+        // Inherit can_download from the roleDownloadMap (parent's configured value)
+        const canDownload = roleDownloadMap[roleId] ?? false;
         if (!existing) {
           const role = await this.roleRepository.findOne({ where: { id: roleId } });
           const isDosenOrTendik = role ? this.isDosenOrTendikRole(role.name) : false;
@@ -721,14 +733,17 @@ export class FoldersService {
             folder_id: child.id,
             role_id: roleId,
             can_read: true,
-            can_download: false,
-            can_create: isDosenOrTendik,
+            can_download: canDownload,
+            can_create: true,
             can_update: isDosenOrTendik,
             can_delete: isDosenOrTendik,
           });
+        } else if (existing.can_download !== canDownload) {
+          // Sync can_download on existing child permission when it differs from parent setting
+          await this.permissionRepository.update(existing.id, { can_download: canDownload });
         }
       }
-      await this.propagatePermissionsToDescendants(child.id, addedRoleIds, removedRoleIds, ownerRoleId);
+      await this.propagatePermissionsToDescendants(child.id, addedRoleIds, removedRoleIds, ownerRoleId, roleDownloadMap);
     }
   }
 
@@ -774,28 +789,42 @@ export class FoldersService {
         }
       }
 
-      // Tambahkan yang belum ada
+      // Tambahkan yang belum ada / update yang sudah ada
       for (const roleId of targetRoleIds) {
         // Skip if it's the owner's own role (already has full permissions)
         if (roleId === ownerRoleId) continue;
-        if (!currentRolePerms.find(p => p.role_id === roleId)) {
+        const existingPerm = currentRolePerms.find(p => p.role_id === roleId);
+        // Respect per-role download setting from role_download_map (keyed by role ID)
+        const canDownload = updateFolderDto.role_download_map?.[roleId] ?? existingPerm?.can_download ?? false;
+        if (!existingPerm) {
           const role = await this.roleRepository.findOne({ where: { id: roleId } });
           const isDosenOrTendik = role ? this.isDosenOrTendikRole(role.name) : false;
           await this.permissionRepository.save({
             folder_id: folder.id,
             role_id: roleId,
             can_read: true,
-            can_download: false,
-            can_create: isDosenOrTendik,
+            can_download: canDownload,
+            can_create: true,
             can_update: isDosenOrTendik,
             can_delete: isDosenOrTendik,
           });
           addedRoleIds.push(roleId);
+        } else if (updateFolderDto.role_download_map !== undefined && existingPerm.can_download !== canDownload) {
+          // Update can_download of existing permission when explicitly provided
+          await this.permissionRepository.update(existingPerm.id, { can_download: canDownload });
+          console.log(`[FolderPerm] Updated can_download=${canDownload} for role=${roleId} folder=${folder.id}`);
         }
       }
 
-      // Propagate permission changes recursively to all existing subfolders
-      await this.propagatePermissionsToDescendants(folder.id, addedRoleIds, removedRoleIds, ownerRoleId);
+      // Propagate permission changes recursively to all existing subfolders.
+      // Pass roleDownloadMap so descendants inherit the same can_download settings.
+      await this.propagatePermissionsToDescendants(
+        folder.id,
+        addedRoleIds,
+        removedRoleIds,
+        ownerRoleId,
+        updateFolderDto.role_download_map ?? {},
+      );
     }
 
     // --- SINKRONISASI USER PERMISSIONS ---
@@ -1006,7 +1035,7 @@ export class FoldersService {
     }
 
     // OR logic: if ANY permission record grants the requested type, allow it
-    return permissions.some(permission => {
+    const result = permissions.some(permission => {
       switch (permissionType) {
         case 'read': return permission.can_read;
         case 'create': return permission.can_create;
@@ -1016,6 +1045,15 @@ export class FoldersService {
         default: return false;
       }
     });
+
+    if (permissionType === 'download') {
+      console.log(
+        `[FolderPerm] checkPermission folder=${folderId} user=${userId} role=${roleId} type=download result=${result} ` +
+        `records=${JSON.stringify(permissions.map(p => ({ uid: p.user_id, rid: p.role_id, dl: p.can_download })))}`,
+      );
+    }
+
+    return result;
   }
 
 }

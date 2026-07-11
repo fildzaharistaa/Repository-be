@@ -1,12 +1,13 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, IsNull } from 'typeorm';
 import { AccessRequest } from './access-request.entity';
 import { Folder } from '../entities/folder.entity';
 import { File } from '../entities/file.entity';
 import { User } from '../entities/user.entity';
 import { Role } from '../entities/role.entity';
 import { FolderPermission } from '../entities/folder-permission.entity';
+import { FilePermission } from '../entities/file-permission.entity';
 import { SystemSetting } from '../entities/system-setting.entity';
 import { canShareOrModifyFile } from '../common/utils/file-access';
 
@@ -25,6 +26,9 @@ export class AccessRequestsService {
 
     @InjectRepository(FolderPermission)
     private folderPermissionRepo: Repository<FolderPermission>,
+
+    @InjectRepository(FilePermission)
+    private filePermissionRepo: Repository<FilePermission>,
 
     @InjectRepository(User)
     private userRepo: Repository<User>,
@@ -237,7 +241,7 @@ export class AccessRequestsService {
       });
 
     } else if (request.file) {
-      
+
       // For file requests, grant read permission on the parent folder
       // so the user can access the file
       if (request.file.folder) {
@@ -341,6 +345,14 @@ export class AccessRequestsService {
       (p) => p.folder && p.folder.owner && p.folder.owner.id !== userId
     );
 
+    // Notifikasi untuk direct file share via file_permissions
+    const directFileShares = await this.filePermissionRepo.find({
+      where: { user_id: userId },
+      relations: ['file'],
+      order: { created_at: 'DESC' },
+      take: 20,
+    });
+
     const normalUpdates = myUpdatedRequests.map((r) => ({
       id: r.id,
       type: 'update' as const,
@@ -354,7 +366,7 @@ export class AccessRequestsService {
     }));
 
     const directShareUpdates = filteredDirectShares.map((p) => ({
-      id: p.id ? Number(p.id.replace(/\D/g, '').substring(0, 8)) + 1000000 : Math.floor(Math.random() * 1000000), // Fake integer ID for UI render keys
+      id: p.id ? Number(p.id.replace(/\D/g, '').substring(0, 8)) + 1000000 : Math.floor(Math.random() * 1000000),
       type: 'update' as const,
       resourceName: p.folder?.name || 'Unknown',
       resourceType: 'folder' as const,
@@ -362,8 +374,17 @@ export class AccessRequestsService {
       createdAt: p.created_at.toISOString(),
     }));
 
+    const directFileShareUpdates = directFileShares.map((p) => ({
+      id: p.id ? Number(p.id.replace(/\D/g, '').substring(0, 8)) + 2000000 : Math.floor(Math.random() * 1000000),
+      type: 'update' as const,
+      resourceName: p.file?.name || 'Unknown',
+      resourceType: 'file' as const,
+      status: 'approved',
+      createdAt: p.created_at.toISOString(),
+    }));
+
     // Gabungkan notifikasi update dan urutkan berdasarkan waktu
-    const allUpdates = [...normalUpdates, ...directShareUpdates].sort(
+    const allUpdates = [...normalUpdates, ...directShareUpdates, ...directFileShareUpdates].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
@@ -388,28 +409,31 @@ export class AccessRequestsService {
 
   // =============================
   // GET SHARED FILES
+  // Role-aware: only returns files where the user has a file_permissions
+  // record matching their current active role (or role_id IS NULL for
+  // unscoped grants). The caller passes activeRoleId from JWT.
+  // Also includes files uploaded by others in the user's own folders.
   // =============================
-  async getSharedFiles(userId: string) {
-    // 1. Files shared WITH the user (only those with View permission)
-    const sharedWithMe = await this.accessRequestRepo.find({
-      where: {
-        requester: { id: userId },
-        status: 'approved',
-        can_read: true,
-      },
-      relations: ['file', 'file.folder', 'file.uploaded_by_role', 'owner', 'owner.role'],
-    });
+  async getSharedFiles(userId: string, activeRoleId: string) {
+    const now = new Date();
 
-    // 2. Files shared BY the user
-    const sharedByMe = await this.accessRequestRepo.find({
-      where: {
-        owner: { id: userId },
-        status: 'approved',
-      },
-      relations: ['file', 'file.folder', 'file.uploaded_by_role'],
-    });
+    // 1. Files shared directly WITH this user for their current active role
+    //    (role_id = activeRoleId) OR role-agnostic grants (role_id IS NULL).
+    const sharedWithMePerms = await this.filePermissionRepo
+      .createQueryBuilder('fp')
+      .innerJoinAndSelect('fp.file', 'file')
+      .leftJoinAndSelect('file.folder', 'folder')
+      .leftJoinAndSelect('file.uploaded_by_role', 'uploadedByRole')
+      .leftJoinAndSelect('file.owner', 'owner')
+      .leftJoinAndSelect('owner.role', 'ownerRole')
+      .where('fp.user_id = :userId', { userId })
+      .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
+      .andWhere('fp.can_read = true')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .andWhere('file.deleted_at IS NULL')
+      .getMany();
 
-    // 3. Files uploaded by OTHERS in MY folders
+    // 2. Files uploaded by OTHERS in the user's own folders
     const othersFilesInMyFolders = await this.fileRepo.createQueryBuilder('file')
       .innerJoinAndSelect('file.folder', 'folder')
       .leftJoinAndSelect('file.owner', 'owner')
@@ -425,39 +449,11 @@ export class AccessRequestsService {
     const me = await this.userRepo.findOne({ where: { id: userId }, relations: ['role'] });
 
     // Process sharedWithMe
-    for (const r of sharedWithMe) {
-      if (!r.file) continue;
-      const file = r.file;
-      if (!resultFiles.has(file.id)) {
-        resultFiles.set(file.id, {
-          id: file.id,
-          name: file.name,
-          mime_type: file.mime_type,
-          size: file.size,
-          created_at: file.created_at,
-          updated_at: file.updated_at,
-          owner_id: r.owner?.id,
-          owner_name: r.owner?.name || 'Unknown',
-          owner_email: r.owner?.email || '(email tidak tersedia)',
-          owner_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by: r.owner?.name || 'Unknown',
-          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
-          can_read: r.can_read,
-          can_download: r.can_download,
-          can_create: r.can_create,
-          can_update: r.can_update,
-          can_delete: r.can_delete,
-          folder_id: file.folder_id ?? null,
-          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
-        });
-      }
-    }
+    for (const perm of sharedWithMePerms) {
+      const file = perm.file;
+      if (!file) continue;
+      if (file.owner_id === userId) continue; // skip own files
 
-    // Process sharedByMe
-    for (const r of sharedByMe) {
-      if (!r.file) continue;
-      const file = r.file;
       if (!resultFiles.has(file.id)) {
         resultFiles.set(file.id, {
           id: file.id,
@@ -466,20 +462,22 @@ export class AccessRequestsService {
           size: file.size,
           created_at: file.created_at,
           updated_at: file.updated_at,
-          owner_id: userId,
-          owner_name: me?.name || 'Anda',
-          owner_email: me?.email || '(email tidak tersedia)',
+          owner_id: file.owner_id,
+          owner_name: (file.owner as any)?.name || 'Unknown',
+          owner_email: (file.owner as any)?.email || '(email tidak tersedia)',
           owner_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by: me?.name || 'Anda',
+          uploaded_by: (file.owner as any)?.name || 'Unknown',
           uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
           uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
-          can_read: true,
-          can_download: true,
-          can_create: true,
-          can_update: true,
-          can_delete: true,
+          can_read: perm.can_read,
+          can_download: perm.can_download,
+          can_create: false,
+          can_update: false,
+          can_delete: false,
           folder_id: file.folder_id ?? null,
           folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
+          // Expose which role_id this share targets so the frontend can show context
+          shared_for_role_id: perm.role_id ?? null,
         });
       }
     }
@@ -508,18 +506,19 @@ export class AccessRequestsService {
           can_delete: true,
           folder_id: file.folder_id ?? null,
           folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
+          shared_for_role_id: null,
         });
       }
     }
 
-    // Batch-fetch folder names for files that didn't get folder loaded (eager-relation issue)
+    // Batch-fetch missing folder names
     const missingFolderIds = [...new Set(
       Array.from(resultFiles.values())
         .filter(f => !f.folder && f.folder_id)
         .map(f => f.folder_id)
     )];
     if (missingFolderIds.length > 0) {
-      const folders = await this.folderRepo.find({ where: { id: In(missingFolderIds) } });
+      const folders = await this.folderRepo.findByIds(missingFolderIds);
       const folderMap = new Map(folders.map(f => [f.id, { id: f.id, name: f.name }]));
       for (const [id, file] of resultFiles) {
         if (!file.folder && file.folder_id && folderMap.has(file.folder_id)) {
@@ -528,14 +527,14 @@ export class AccessRequestsService {
       }
     }
 
-    // Batch-fetch role names for files where uploaded_by_role wasn't loaded (eager-relation issue)
+    // Batch-fetch missing role names
     const missingRoleIds = [...new Set(
       Array.from(resultFiles.values())
         .filter(f => !f.owner_role && f.uploaded_by_role_id)
         .map(f => f.uploaded_by_role_id)
     )];
     if (missingRoleIds.length > 0) {
-      const roles = await this.roleRepository.find({ where: { id: In(missingRoleIds) } });
+      const roles = await this.roleRepository.findByIds(missingRoleIds);
       const roleMap = new Map(roles.map(r => [r.id, r.name]));
       for (const [id, file] of resultFiles) {
         if (!file.owner_role && file.uploaded_by_role_id && roleMap.has(file.uploaded_by_role_id)) {
@@ -545,19 +544,29 @@ export class AccessRequestsService {
       }
     }
 
-    // Convert map to array and sort by created_at descending
     const filesArray = Array.from(resultFiles.values());
     filesArray.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    
+
     return filesArray;
   }
 
   // =============================
   // DIRECT FILE SHARE (BY OWNER)
-  // ============= ================
+  // Stores one file_permissions record per (user_id, role_id) pair so that
+  // access is gated to the exact role the sharer selected — consistent with
+  // how folder Spesifik User Permission works.
+  // =============================
   async directShareFile(
     fileId: string,
-    data: { share_with_roles?: string[]; user_permissions?: any[]; message?: string },
+    data: {
+      user_permissions?: Array<{
+        user_id: string;
+        role_id?: string | null;
+        can_read?: boolean;
+        can_download?: boolean;
+      }>;
+      message?: string;
+    },
     requester: User & { active_role_id?: string; active_role_name?: string },
   ) {
     const file = await this.fileRepo.findOne({
@@ -569,8 +578,6 @@ export class AccessRequestsService {
       throw new NotFoundException('File not found');
     }
 
-    const ownerId = requester.id;
-
     const allowed = await canShareOrModifyFile(
       file as any,
       requester as any,
@@ -580,132 +587,121 @@ export class AccessRequestsService {
       throw new ForbiddenException('Anda tidak berhak men-share file ini');
     }
 
-    const results: AccessRequest[] = [];
-    const targetUserIds = new Set<string>();
-    const userPermsMap = new Map<string, any>();
+    // Build the target set of (user_id, role_id) pairs from the payload.
+    // Each entry represents one role context for one user.
+    const targetEntries: Array<{ user_id: string; role_id: string | null; can_read: boolean; can_download: boolean }> = [];
 
-    // 1. Process specific user permissions
     if (data.user_permissions) {
       for (const p of data.user_permissions) {
-        targetUserIds.add(p.user_id);
-        userPermsMap.set(p.user_id, p);
-      }
-    }
-
-    // 2. Process roles to get more users
-    if (data.share_with_roles) {
-      for (const roleName of data.share_with_roles) {
-        const mappedName = this.mapRoleLabelToName(roleName);
-        const role = await this.roleRepository.findOne({
-          where: { name: mappedName as any }
+        targetEntries.push({
+          user_id: p.user_id,
+          role_id: p.role_id ?? null,
+          can_read: p.can_read ?? true,
+          can_download: p.can_download ?? false,
         });
-        if (role) {
-          const usersInRole = await this.userRepo.find({
-            where: { role_id: role.id }
-          });
-          for (const u of usersInRole) {
-            if (u.id !== ownerId) {
-              targetUserIds.add(u.id);
-            }
-          }
-        }
       }
     }
 
-    // 3. Sync existing shares: Remove shares for users no longer in targetUserIds
-    const existingShares = await this.accessRequestRepo.find({
-      where: { file: { id: fileId }, status: 'approved' },
-      relations: ['requester']
+    // Sync: remove entries that are no longer in the target list
+    const existingPerms = await this.filePermissionRepo.find({
+      where: { file_id: fileId },
     });
 
-    for (const share of existingShares) {
-      if (share.requester && !targetUserIds.has(share.requester.id)) {
-        // Option A: Delete the request
-        // await this.accessRequestRepo.delete(share.id);
-        
-        // Option B: Mark as rejected or just remove the approval
-        share.status = 'rejected';
-        share.response_message = 'Akses dicabut oleh pemilik';
-        await this.accessRequestRepo.save(share);
+    for (const ep of existingPerms) {
+      const stillTarget = targetEntries.some(
+        t => t.user_id === ep.user_id && (t.role_id ?? null) === ep.role_id,
+      );
+      if (!stillTarget) {
+        await this.filePermissionRepo.delete(ep.id);
       }
     }
 
-    // 4. Grant/Update access to all identified users
-    for (const userId of targetUserIds) {
-      const targetUser = await this.userRepo.findOne({ where: { id: userId }, relations: ['role'] });
-      if (!targetUser) continue;
+    // Upsert each target entry
+    let count = 0;
+    for (const entry of targetEntries) {
+      const existing = existingPerms.find(
+        ep => ep.user_id === entry.user_id && ep.role_id === (entry.role_id ?? null),
+      );
 
-      const roleName = targetUser.role?.name?.toLowerCase() || '';
-      const isDosenOrTendik = roleName.includes('dosen') || roleName.includes('tendik');
-
-      let request = await this.accessRequestRepo.findOne({
-        where: { requester: { id: userId }, file: { id: fileId } }
-      });
-
-      const userPerms = userPermsMap.get(userId) || {
-        can_read: true, can_download: false, can_create: isDosenOrTendik, can_update: isDosenOrTendik, can_delete: isDosenOrTendik
-      };
-
-      if (!request) {
-        request = this.accessRequestRepo.create({
-          requester: targetUser,
-          file: file,
-          owner: file.folder.owner as User,
-          status: 'approved',
-          response_message: data.message || null,
-          can_read: userPerms.can_read ?? true,
-          can_download: userPerms.can_download ?? false,
-          can_create: isDosenOrTendik,
-          can_update: isDosenOrTendik,
-          can_delete: isDosenOrTendik,
+      if (existing) {
+        await this.filePermissionRepo.update(existing.id, {
+          can_read: entry.can_read,
+          can_download: entry.can_download,
         });
       } else {
-        request.status = 'approved';
-        if (data.message) request.response_message = data.message;
-        request.can_read = userPerms.can_read ?? true;
-        request.can_download = userPerms.can_download ?? false;
-        request.can_create = isDosenOrTendik;
-        request.can_update = isDosenOrTendik;
-        request.can_delete = isDosenOrTendik;
+        await this.filePermissionRepo.save(
+          this.filePermissionRepo.create({
+            file_id: fileId,
+            user_id: entry.user_id,
+            role_id: entry.role_id,
+            can_read: entry.can_read,
+            can_download: entry.can_download,
+          }),
+        );
       }
+      count++;
 
-      await this.accessRequestRepo.save(request);
-
-      // Ensure they can "see" the parent folder to list the file
+      // Ensure the user can "see" the parent folder to list this file.
+      // Only create a role-scoped folder permission if role_id is provided —
+      // this is the same scoping logic as folder Spesifik User Permission.
+      const roleIdForFolder = entry.role_id;
       const existingFolderPerm = await this.folderPermissionRepo.findOne({
-        where: { user_id: userId, folder_id: file.folder_id }
+        where: {
+          user_id: entry.user_id,
+          folder_id: file.folder_id,
+          role_id: roleIdForFolder === null ? IsNull() : roleIdForFolder,
+        },
       });
 
       if (!existingFolderPerm) {
-        await this.folderPermissionRepo.save({
-          user_id: userId,
-          folder_id: file.folder_id,
-          can_read: true,
-          can_create: false,
-          can_update: false,
-          can_delete: false
-        });
+        await this.folderPermissionRepo.save(
+          this.folderPermissionRepo.create({
+            user_id: entry.user_id,
+            folder_id: file.folder_id,
+            role_id: roleIdForFolder,
+            can_read: true,
+            can_download: entry.can_download,
+            can_create: false,
+            can_update: false,
+            can_delete: false,
+          }),
+        );
       }
-
-      results.push(request);
     }
 
     return {
-      message: `${results.length} users granted access to file`,
-      count: results.length
+      message: `${count} entri akses file berhasil disimpan`,
+      count,
     };
   }
-    // =============================
+
+  // =============================
   // GET FILE SHARES
+  // Returns all active file_permissions for a file, with user and role info.
   // =============================
   async getFileShares(fileId: string) {
-    return this.accessRequestRepo.find({
-      where: {
-        file: { id: fileId },
-        status: 'approved'
-      },
-      relations: ['requester']
+    const perms = await this.filePermissionRepo.find({
+      where: { file_id: fileId },
+      relations: ['user', 'role'],
     });
+
+    return perms.map(p => ({
+      id: p.id,
+      file_id: p.file_id,
+      user_id: p.user_id,
+      role_id: p.role_id,
+      can_read: p.can_read,
+      can_download: p.can_download,
+      expires_at: p.expires_at,
+      created_at: p.created_at,
+      // Expose nested user and role so the frontend can reconstruct state
+      user: p.user
+        ? { id: p.user.id, name: (p.user as any).name, email: (p.user as any).email }
+        : null,
+      role: p.role
+        ? { id: p.role.id, name: (p.role as any).name }
+        : null,
+    }));
   }
 
   // =============================
@@ -723,8 +719,6 @@ export class AccessRequestsService {
     });
     if (!requester) throw new NotFoundException('User not found');
 
-    // Check restriction based on ACTIVE role's is_private flag, not the hardcoded primary role name.
-    // A user whose primary role is Dosen but is currently acting as Wakil Dekan should be allowed.
     const roleIdToCheck = activeRoleId || requester.role_id;
     const activeRole = roleIdToCheck
       ? await this.roleRepository.findOne({ where: { id: roleIdToCheck } })
@@ -734,8 +728,7 @@ export class AccessRequestsService {
       throw new ForbiddenException('Role ini tidak diizinkan untuk request tambah kedalaman folder');
     }
 
-    // Find any admin user to be the "owner" of this request
-    const adminRole = await this.roleRepository.findOne({ 
+    const adminRole = await this.roleRepository.findOne({
       where: [
         { name: 'Super Admin' as any },
         { name: 'admin' as any },
@@ -748,7 +741,6 @@ export class AccessRequestsService {
     const adminUser = await this.userRepo.findOne({ where: { role_id: adminRole.id } });
     if (!adminUser) throw new NotFoundException('Admin user not found');
 
-    // Check if there's already a pending hierarchy request from this user
     const existing = await this.accessRequestRepo.findOne({
       where: {
         requester: { id: userId },
@@ -795,7 +787,6 @@ export class AccessRequestsService {
     request.response_message = responseMessage || null;
     await this.accessRequestRepo.save(request);
 
-    // Update the specific user's max_folder_depth
     if (request.requested_depth) {
       request.requester.max_folder_depth = request.requested_depth;
       await this.userRepo.save(request.requester);
