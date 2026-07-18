@@ -218,6 +218,7 @@ export class StatsController {
         .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
         .andWhere('file.deleted_at IS NULL')
         .andWhere('folder.deleted_at IS NULL')
+        .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
         .getCount();
 
       // Total storage dari file di dalam accessible folders
@@ -228,6 +229,7 @@ export class StatsController {
         .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
         .andWhere('file.deleted_at IS NULL')
         .andWhere('folder.deleted_at IS NULL')
+        .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
         .getRawOne();
 
       totalSize = parseInt(storageResult?.totalSize || '0');
@@ -239,6 +241,7 @@ export class StatsController {
         .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
         .andWhere('file.deleted_at IS NULL')
         .andWhere('folder.deleted_at IS NULL')
+        .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
         .orderBy('file.created_at', 'DESC')
         .take(15)
         .getMany();
@@ -331,10 +334,13 @@ export class StatsController {
 
         const fileStats = await this.fileRepository
           .createQueryBuilder('file')
+          .innerJoin('file.folder', 'folder')
           .select('COUNT(*)', 'count')
           .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
           .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
           .andWhere('file.deleted_at IS NULL')
+          .andWhere('folder.deleted_at IS NULL')
+          .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
           .getRawOne();
 
         return {
@@ -414,10 +420,13 @@ export class StatsController {
 
         const fileStats = await this.fileRepository
           .createQueryBuilder('file')
+          .innerJoin('file.folder', 'folder')
           .select('COUNT(*)', 'count')
           .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
           .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
           .andWhere('file.deleted_at IS NULL')
+          .andWhere('folder.deleted_at IS NULL')
+          .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
           .getRawOne();
 
         return {

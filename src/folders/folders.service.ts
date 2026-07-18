@@ -406,13 +406,11 @@ export class FoldersService {
     });
 
     // A private-role child is only visible when the current user is its owner AND is
-    // operating under the exact role the child belongs to.  Non-private children from
-    // another user's private workspace are always hidden regardless of ownership.
+    // operating under the exact role the child belongs to.
     folder.children = allChildren.filter((child) => {
       if ((child as any).role?.is_private) {
         return child.owner_id === user.id && child.role_id === activeRoleId;
       }
-      if ((child.owner as any)?.role?.is_private && child.owner_id !== user.id) return false;
       return true;
     });
 
