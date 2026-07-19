@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
+import { Repository } from 'typeorm';
 import { AccessRequest } from './access-request.entity';
 import { Folder } from '../entities/folder.entity';
 import { File } from '../entities/file.entity';
@@ -324,13 +324,17 @@ export class AccessRequestsService {
           order: { createdAt: 'DESC' },
         });
 
-    // Notifikasi untuk requester: request mereka yang sudah di-approve/reject
+    // Notifikasi untuk requester: request mereka yang sudah di-approve/reject.
+    // withDeleted: true — the resource may have been moved to Recycle Bin (soft
+    // deleted) after being approved; the notification should still show its
+    // original name instead of falling back to "Unknown".
     const myUpdatedRequests = await this.accessRequestRepo.find({
       where: [
         { requester: { id: userId }, status: 'approved' },
         { requester: { id: userId }, status: 'rejected' },
       ],
       relations: ['folder', 'file', 'requester', 'requester.role'],
+      withDeleted: true,
       order: { createdAt: 'DESC' },
     });
 
@@ -637,33 +641,6 @@ export class AccessRequestsService {
         );
       }
       count++;
-
-      // Ensure the user can "see" the parent folder to list this file.
-      // Only create a role-scoped folder permission if role_id is provided —
-      // this is the same scoping logic as folder Spesifik User Permission.
-      const roleIdForFolder = entry.role_id;
-      const existingFolderPerm = await this.folderPermissionRepo.findOne({
-        where: {
-          user_id: entry.user_id,
-          folder_id: file.folder_id,
-          role_id: roleIdForFolder === null ? IsNull() : roleIdForFolder,
-        },
-      });
-
-      if (!existingFolderPerm) {
-        await this.folderPermissionRepo.save(
-          this.folderPermissionRepo.create({
-            user_id: entry.user_id,
-            folder_id: file.folder_id,
-            role_id: roleIdForFolder,
-            can_read: true,
-            can_download: entry.can_download,
-            can_create: false,
-            can_update: false,
-            can_delete: false,
-          }),
-        );
-      }
     }
 
     return {
