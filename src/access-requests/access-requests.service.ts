@@ -310,7 +310,8 @@ export class AccessRequestsService {
       where: { id: userId },
       relations: ['role'],
     });
-    const isAdmin = user?.role?.name === 'admin';
+    const userRoleName = user?.role?.name?.toLowerCase() ?? '';
+    const isAdmin = userRoleName === 'admin' || userRoleName === 'super admin' || userRoleName === 'superadmin';
 
     // Notifikasi untuk pemilik folder: pending requests yang ditujukan ke mereka
     const incomingRequests = isAdmin
@@ -409,12 +410,38 @@ export class AccessRequestsService {
 
   // =============================
   // GET SHARED FILES
-  // Role-aware: only returns files where the user has a file_permissions
-  // record matching their current active role (or role_id IS NULL for
-  // unscoped grants). The caller passes activeRoleId from JWT.
+  // Role-aware: returns files shared with the user either (a) directly via a
+  // file_permissions grant, or (b) because the user was granted access to the
+  // file's parent folder via folder_permissions (e.g. an approved access
+  // request from Global Search). The caller passes activeRoleId from JWT.
   // =============================
   async getSharedFiles(userId: string, activeRoleId: string) {
     const now = new Date();
+
+    const toFileEntry = (file: File, can_read: boolean, can_download: boolean, sharedForRoleId: string | null) => ({
+      id: file.id,
+      name: file.name,
+      mime_type: file.mime_type,
+      size: file.size,
+      created_at: file.created_at,
+      updated_at: file.updated_at,
+      owner_id: file.owner_id,
+      owner_name: (file.owner as any)?.name || 'Unknown',
+      owner_email: (file.owner as any)?.email || '(email tidak tersedia)',
+      owner_role: (file as any).uploaded_by_role?.name ?? null,
+      uploaded_by: (file.owner as any)?.name || 'Unknown',
+      uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
+      uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
+      can_read,
+      can_download,
+      can_create: false,
+      can_update: false,
+      can_delete: false,
+      folder_id: file.folder_id ?? null,
+      folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
+      // Expose which role_id this share targets so the frontend can show context
+      shared_for_role_id: sharedForRoleId,
+    });
 
     // Files shared directly WITH this user for their current active role
     // (role_id = activeRoleId) OR role-agnostic grants (role_id IS NULL).
@@ -441,30 +468,43 @@ export class AccessRequestsService {
       if (file.owner_id === userId) continue; // skip own files
 
       if (!resultFiles.has(file.id)) {
-        resultFiles.set(file.id, {
-          id: file.id,
-          name: file.name,
-          mime_type: file.mime_type,
-          size: file.size,
-          created_at: file.created_at,
-          updated_at: file.updated_at,
-          owner_id: file.owner_id,
-          owner_name: (file.owner as any)?.name || 'Unknown',
-          owner_email: (file.owner as any)?.email || '(email tidak tersedia)',
-          owner_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by: (file.owner as any)?.name || 'Unknown',
-          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
-          can_read: perm.can_read,
-          can_download: perm.can_download,
-          can_create: false,
-          can_update: false,
-          can_delete: false,
-          folder_id: file.folder_id ?? null,
-          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
-          // Expose which role_id this share targets so the frontend can show context
-          shared_for_role_id: perm.role_id ?? null,
-        });
+        resultFiles.set(file.id, toFileEntry(file, perm.can_read, perm.can_download, perm.role_id ?? null));
+      }
+    }
+
+    // Files inside folders shared WITH this user via folder_permissions (e.g.
+    // an approved access request) — these never get an individual
+    // file_permissions row, so they'd otherwise never show up here even
+    // though the user can already browse into the folder itself.
+    const sharedFolderPerms = await this.folderPermissionRepo
+      .createQueryBuilder('fp')
+      .where('fp.user_id = :userId', { userId })
+      .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
+      .andWhere('fp.can_read = true')
+      .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+      .getMany();
+
+    const sharedFolderIds = [...new Set(sharedFolderPerms.map((fp) => fp.folder_id))];
+
+    if (sharedFolderIds.length > 0) {
+      const filesInSharedFolders = await this.fileRepo
+        .createQueryBuilder('file')
+        .leftJoinAndSelect('file.folder', 'folder')
+        .leftJoinAndSelect('file.uploaded_by_role', 'uploadedByRole')
+        .leftJoinAndSelect('file.owner', 'owner')
+        .where('file.folder_id IN (:...folderIds)', { folderIds: sharedFolderIds })
+        .andWhere('file.deleted_at IS NULL')
+        .getMany();
+
+      for (const file of filesInSharedFolders) {
+        if (file.owner_id === userId) continue; // skip own files
+        if (resultFiles.has(file.id)) continue; // already included via direct file share
+
+        const folderPerm = sharedFolderPerms.find((fp) => fp.folder_id === file.folder_id);
+        resultFiles.set(
+          file.id,
+          toFileEntry(file, folderPerm?.can_read ?? true, folderPerm?.can_download ?? false, folderPerm?.role_id ?? null),
+        );
       }
     }
 
