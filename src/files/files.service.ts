@@ -165,20 +165,26 @@ export class FilesService {
       );
     }
 
-    // Determine isolation based on the ACTIVE role name from the JWT (payload.role),
-    // not the primary role stored in users.role_id which never changes on switch-role.
-    const activeRoleName = ((user as any).active_role_name ?? '').toLowerCase();
-    const isDosenOrTendik = activeRoleName.includes('dosen') || activeRoleName.includes('tendik');
+    // Ownership is role-context-aware: a user is the "contextual owner" only when
+    // both their user ID and their currently active role match the folder's owner + role.
+    // A multi-role user accessing a folder they created under a different role is treated
+    // as a regular non-owner for that access context.
+    const isContextualOwner = folder.owner_id === user.id && folder.role_id === activeRoleId;
 
-    const whereCondition: any = { folder_id: folderId };
-    // Apply ownership isolation only when the folder truly belongs to the user in their
-    // current role context. A multi-role user (e.g. Bambang who is both WD2 and Dosen)
-    // may own a folder they created under a different role. When they access it via the
-    // Dosen role (because it was shared with Dosen), it must be treated as a shared folder
-    // so that files uploaded by others (e.g. Abi) remain visible.
-    const isOwnFolder = folder.owner_id === user.id && folder.role_id === activeRoleId;
-    if (isDosenOrTendik && isOwnFolder) {
-      whereCondition.owner_id = user.id;
+    let whereCondition: any;
+    if (isContextualOwner) {
+      // Contextual owner: see ALL files in the folder.
+      whereCondition = { folder_id: folderId };
+    } else {
+      // Non-contextual-owner (including the folder owner in a different role context):
+      // see files they uploaded in the current role + files the folder owner uploaded
+      // in the folder's own role context (i.e. uploaded_by_role_id = folder.role_id).
+      // Files uploaded by the folder owner under a different role are treated as
+      // regular non-owner files — visible only to themselves.
+      whereCondition = [
+        { folder_id: folderId, owner_id: user.id, uploaded_by_role_id: activeRoleId },
+        { folder_id: folderId, owner_id: folder.owner_id, uploaded_by_role_id: folder.role_id },
+      ];
     }
 
     const files = await this.fileRepository.find({

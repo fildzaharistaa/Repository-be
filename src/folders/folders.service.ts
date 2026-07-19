@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm';
@@ -20,7 +21,7 @@ export interface FolderTreeNode {
 }
 
 @Injectable()
-export class FoldersService {
+export class FoldersService implements OnModuleInit {
   constructor(
     @InjectRepository(Folder)
     private folderRepository: Repository<Folder>,
@@ -33,6 +34,15 @@ export class FoldersService {
     @InjectRepository(SystemSetting)
     private settingRepository: Repository<SystemSetting>,
   ) { }
+
+  async onModuleInit() {
+    // The original DB schema had a CHECK constraint that prevented folder_permissions
+    // from having both user_id and role_id set simultaneously. This blocks role-scoped
+    // user grants (needed for Spesifik User Permission). Drop it if it still exists.
+    await this.folderRepository.manager.query(
+      `ALTER TABLE folder_permissions DROP CONSTRAINT IF EXISTS chk_permissions_user_or_role`
+    );
+  }
 
   /**
    * Calculate the depth of a folder by traversing the parent chain.
@@ -280,9 +290,7 @@ export class FoldersService {
       }
     }
 
-    // Assign specific user permissions
-    // Permission identity = (user_id + role_id): scopes the grant to a specific user
-    // acting in a specific role context. role_id IS NULL means "any role context".
+    // Assign specific user permissions, keyed by (user_id, role_id) pair.
     if (createFolderDto.user_permissions && createFolderDto.user_permissions.length > 0) {
       for (const perm of createFolderDto.user_permissions) {
         const permRoleId: string | null = perm.role_id ?? null;
@@ -383,12 +391,10 @@ export class FoldersService {
     const activeRoleId = (user as any).active_role_id || user.role_id;
     const isOwner = folder.owner_id === user.id;
 
-    // Private-role folders are bound to the exact (user, role) creation context.
-    // Only the owner, operating under the folder's own role, may open it.
-    if (folder.role?.is_private) {
-      if (!isOwner || activeRoleId !== folder.role_id) {
-        throw new ForbiddenException('Access denied');
-      }
+    // Private-role folders: the owner must be in the exact role context.
+    // Non-owners may access if they have an explicit user-specific permission grant.
+    if (folder.role?.is_private && isOwner && activeRoleId !== folder.role_id) {
+      throw new ForbiddenException('Access denied');
     }
 
     if (!isOwner) {
@@ -406,13 +412,11 @@ export class FoldersService {
     });
 
     // A private-role child is only visible when the current user is its owner AND is
-    // operating under the exact role the child belongs to.  Non-private children from
-    // another user's private workspace are always hidden regardless of ownership.
+    // operating under the exact role the child belongs to.
     folder.children = allChildren.filter((child) => {
       if ((child as any).role?.is_private) {
         return child.owner_id === user.id && child.role_id === activeRoleId;
       }
-      if ((child.owner as any)?.role?.is_private && child.owner_id !== user.id) return false;
       return true;
     });
 
@@ -552,6 +556,7 @@ export class FoldersService {
   async getSharedTree(user: User): Promise<any[]> {
     const activeRoleId = (user as any).active_role_id || user.role_id;
     const now = new Date();
+    console.log(`[DEBUG getSharedTree] userId=${user.id} activeRoleId=${activeRoleId}`);
 
     // --- 1. Role-based shared folders ---
     // Folders where a permission record targets the active role (user_id is irrelevant here;
@@ -566,7 +571,7 @@ export class FoldersService {
       .andWhere('fp.user_id IS NULL')
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r3.is_private = true AND f3.role_id != :roleId)', { roleId: activeRoleId })
+      .andWhere('NOT (r3.is_private = true AND f3.role_id = :roleId)', { roleId: activeRoleId })
       .getRawMany();
 
     // --- 2. User-specific shared folders ---
@@ -583,12 +588,12 @@ export class FoldersService {
       .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id != :roleId)', { roleId: activeRoleId })
       .getRawMany();
 
     const roleSharedIds = new Set(rolePerms.map((p) => p.folder_id));
     const userSharedIds = new Set(userPerms.map((p) => p.folder_id));
     const directSharedIds = [...new Set([...roleSharedIds, ...userSharedIds])];
+    console.log(`[DEBUG getSharedTree] roleSharedIds=${JSON.stringify([...roleSharedIds])} userSharedIds=${JSON.stringify([...userSharedIds])}`);
 
     if (!directSharedIds.length) return [];
 
@@ -615,19 +620,22 @@ export class FoldersService {
     //    same filter rules apply and work correctly because descendants are owned by the
     //    sharer (owner_id ≠ current user) and have a different role_id than activeRoleId.
     const sharedFolders = folders.filter((f) => {
-      // A private-role folder is bound exclusively to its (user, role) creation context.
-      // Hide it from all other role views — including the same user's other roles.
-      if (f.role?.is_private && f.role_id !== activeRoleId) return false;
-
-      if (userSharedIds.has(f.id)) return true;
-      // Hanya exclude folder milik user jika folder itu ada di workspace role aktif saat ini
-      // (sudah terlihat di "My Folders"). Folder dari workspace lain (beda role) tetap tampil
-      // jika ada role-permission untuk role aktif.
-      if (f.owner_id === user.id && f.role_id === activeRoleId) return false;
-      return f.role_id !== activeRoleId;
+      // Block same-role private folders (prevents Dosen A from seeing Dosen B's private folder
+      // via a group role share). Cross-role private folders (e.g. Dosen folder shared with WD1)
+      // are allowed through — the query guards already enforce correctness there.
+      const isPrivateSameRole = !!(f.role?.is_private && f.role_id === activeRoleId);
+      const inUserShared = userSharedIds.has(f.id);
+      const isOwnerSameRole = f.owner_id === user.id && f.role_id === activeRoleId;
+      const differentRole = f.role_id !== activeRoleId;
+      console.log(`[DEBUG filter] folder=${f.id} name=${f.name} parent_id=${f.parent_id} is_private=${f.role?.is_private} role_id=${f.role_id} activeRole=${activeRoleId} → privateSameRole=${isPrivateSameRole} inUserShared=${inUserShared} isOwnerSameRole=${isOwnerSameRole} differentRole=${differentRole}`);
+      if (isPrivateSameRole && !inUserShared) return false;
+      if (inUserShared) return true;
+      if (isOwnerSameRole) return false;
+      return differentRole;
     });
+    console.log(`[DEBUG filter] sharedFolders count=${sharedFolders.length} ids=${JSON.stringify(sharedFolders.map(f => f.id))}`);
 
-    return this.buildTreeWithOwner(sharedFolders);
+    return this.buildTreeWithOwner(sharedFolders, userSharedIds);
   }
 
   private buildTree(folders: Folder[]): FolderTreeNode[] {
@@ -662,7 +670,7 @@ export class FoldersService {
     return rootFolders;
   }
 
-  private buildTreeWithOwner(folders: Folder[]): any[] {
+  private buildTreeWithOwner(folders: Folder[], userSharedIds: Set<string> = new Set()): any[] {
     const folderMap = new Map<string, any>();
     const rootFolders: any[] = [];
 
@@ -682,7 +690,11 @@ export class FoldersService {
 
     folders.forEach((folder) => {
       const node = folderMap.get(folder.id)!;
-      if (folder.parent_id && folderMap.has(folder.parent_id)) {
+      // Folders with an explicit user-specific permission always appear at root level,
+      // even when their parent folder is also in the tree (e.g. visible via a role grant).
+      // This ensures directly-shared folders are not hidden inside a role-shared parent.
+      const isExplicitlyShared = userSharedIds.has(folder.id);
+      if (!isExplicitlyShared && folder.parent_id && folderMap.has(folder.parent_id)) {
         const parent = folderMap.get(folder.parent_id)!;
         if (!parent.children) {
           parent.children = [];
@@ -779,7 +791,7 @@ export class FoldersService {
 
       // Hapus izin role yang tidak ada di targetRoleIds untuk folder ini
       // PENTING: Jangan hapus permission role milik owner folder sendiri
-      const currentRolePerms = folder.permissions.filter(p => !!p.role_id);
+      const currentRolePerms = folder.permissions.filter(p => !!p.role_id && !p.user_id);
       for (const p of currentRolePerms) {
         // Protect owner's own role permission
         if (p.role_id === ownerRoleId) continue;
@@ -833,7 +845,7 @@ export class FoldersService {
     if (updateFolderDto.user_permissions) {
       const currentUserPerms = folder.permissions.filter(p => !!p.user_id);
 
-      // Delete permissions no longer in the target list (matched by user_id + role_id)
+      // Delete permissions no longer in the target list, matched by (user_id, role_id) pair.
       for (const p of currentUserPerms) {
         const inTarget = updateFolderDto.user_permissions.some(
           up => up.user_id === p.user_id && (up.role_id ?? null) === p.role_id,
@@ -846,10 +858,9 @@ export class FoldersService {
       // Add / Update
       for (const up of updateFolderDto.user_permissions) {
         const upRoleId: string | null = up.role_id ?? null;
-        // Skip redundant self-permissions only when role context matches the owner's
-        // workspace role or is unscoped — the owner already has full access there.
-        // Cross-role explicit grants (different role_id) must be saved.
-        if (up.user_id === folder.owner_id && (upRoleId === null || upRoleId === folder.role_id)) continue;
+        // Owner already has full access to their own folder — skip self-grants.
+        if (up.user_id === folder.owner_id) continue;
+        // Match existing record by (user_id, role_id) pair.
         const existing = currentUserPerms.find(
           p => p.user_id === up.user_id && p.role_id === upRoleId,
         );
@@ -939,7 +950,6 @@ export class FoldersService {
       .andWhere('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
       .andWhere('f2.role_id != :activeRoleId', { activeRoleId })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
       .getRawMany();
 
     // 3. User-specific shared folders: personal grants scoped to the active role
@@ -953,7 +963,6 @@ export class FoldersService {
       .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
       .andWhere('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
       .getRawMany();
 
     return Array.from(new Set([
@@ -992,7 +1001,15 @@ export class FoldersService {
     // Only the owner, operating under the folder's own role, may access it.
     // This prevents the owner from accessing their own private folder via a different role.
     if (folder.role?.is_private) {
-      return folder.owner_id === userId && roleId === folder.role_id;
+      // Owner in the exact role context: full access.
+      if (folder.owner_id === userId) return roleId === folder.role_id;
+      // Explicit user-specific grant always takes precedence (covers same-role & cross-role).
+      const userPerm = permissions.find(p => p.user_id === userId);
+      if (userPerm) return !!(userPerm as any)[`can_${permissionType}`];
+      // Same private role, no user-specific grant → deny (prevents role-level leakage).
+      if (folder.role_id === roleId) return false;
+      // Cross-role: role-based permission is enough.
+      return permissions.some(p => !!(p as any)[`can_${permissionType}`]);
     }
 
     // Non-private: folder owner always has full access regardless of permission records.

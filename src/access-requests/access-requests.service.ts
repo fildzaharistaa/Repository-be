@@ -412,13 +412,12 @@ export class AccessRequestsService {
   // Role-aware: only returns files where the user has a file_permissions
   // record matching their current active role (or role_id IS NULL for
   // unscoped grants). The caller passes activeRoleId from JWT.
-  // Also includes files uploaded by others in the user's own folders.
   // =============================
   async getSharedFiles(userId: string, activeRoleId: string) {
     const now = new Date();
 
-    // 1. Files shared directly WITH this user for their current active role
-    //    (role_id = activeRoleId) OR role-agnostic grants (role_id IS NULL).
+    // Files shared directly WITH this user for their current active role
+    // (role_id = activeRoleId) OR role-agnostic grants (role_id IS NULL).
     const sharedWithMePerms = await this.filePermissionRepo
       .createQueryBuilder('fp')
       .innerJoinAndSelect('fp.file', 'file')
@@ -433,20 +432,7 @@ export class AccessRequestsService {
       .andWhere('file.deleted_at IS NULL')
       .getMany();
 
-    // 2. Files uploaded by OTHERS in the user's own folders
-    const othersFilesInMyFolders = await this.fileRepo.createQueryBuilder('file')
-      .innerJoinAndSelect('file.folder', 'folder')
-      .leftJoinAndSelect('file.owner', 'owner')
-      .leftJoinAndSelect('owner.role', 'role')
-      .leftJoinAndSelect('file.uploaded_by_role', 'uploadedByRole')
-      .where('folder.owner_id = :userId', { userId })
-      .andWhere('file.owner_id != :userId', { userId })
-      .andWhere('file.deleted_at IS NULL')
-      .andWhere('folder.deleted_at IS NULL')
-      .getMany();
-
     const resultFiles = new Map<string, any>();
-    const me = await this.userRepo.findOne({ where: { id: userId }, relations: ['role'] });
 
     // Process sharedWithMe
     for (const perm of sharedWithMePerms) {
@@ -478,35 +464,6 @@ export class AccessRequestsService {
           folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
           // Expose which role_id this share targets so the frontend can show context
           shared_for_role_id: perm.role_id ?? null,
-        });
-      }
-    }
-
-    // Process othersFilesInMyFolders
-    for (const file of othersFilesInMyFolders) {
-      if (!resultFiles.has(file.id)) {
-        resultFiles.set(file.id, {
-          id: file.id,
-          name: file.name,
-          mime_type: file.mime_type,
-          size: file.size,
-          created_at: file.created_at,
-          updated_at: file.updated_at,
-          owner_id: file.owner_id,
-          owner_name: file.owner?.name || 'Unknown',
-          owner_email: file.owner?.email || '(email tidak tersedia)',
-          owner_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by: file.owner?.name || 'Unknown',
-          uploaded_by_role: (file as any).uploaded_by_role?.name ?? null,
-          uploaded_by_role_id: (file as any).uploaded_by_role_id ?? null,
-          can_read: true,
-          can_download: true,
-          can_create: true,
-          can_update: true,
-          can_delete: true,
-          folder_id: file.folder_id ?? null,
-          folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
-          shared_for_role_id: null,
         });
       }
     }

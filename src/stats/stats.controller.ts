@@ -13,6 +13,7 @@ interface FolderOverviewItem {
   file_count: number;
   storage_size: number;
   updated_at: Date;
+  owner_id: string | null;
   owner_name: string | null;
   owner_email: string | null;
   owner_role: string | null;
@@ -217,6 +218,7 @@ export class StatsController {
         .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
         .andWhere('file.deleted_at IS NULL')
         .andWhere('folder.deleted_at IS NULL')
+        .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
         .getCount();
 
       // Total storage dari file di dalam accessible folders
@@ -227,6 +229,7 @@ export class StatsController {
         .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
         .andWhere('file.deleted_at IS NULL')
         .andWhere('folder.deleted_at IS NULL')
+        .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
         .getRawOne();
 
       totalSize = parseInt(storageResult?.totalSize || '0');
@@ -238,6 +241,7 @@ export class StatsController {
         .where('folder.id IN (:...accessibleFolderIds)', { accessibleFolderIds })
         .andWhere('file.deleted_at IS NULL')
         .andWhere('folder.deleted_at IS NULL')
+        .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
         .orderBy('file.created_at', 'DESC')
         .take(15)
         .getMany();
@@ -330,10 +334,13 @@ export class StatsController {
 
         const fileStats = await this.fileRepository
           .createQueryBuilder('file')
+          .innerJoin('file.folder', 'folder')
           .select('COUNT(*)', 'count')
           .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
           .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
           .andWhere('file.deleted_at IS NULL')
+          .andWhere('folder.deleted_at IS NULL')
+          .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
           .getRawOne();
 
         return {
@@ -343,6 +350,7 @@ export class StatsController {
           file_count: parseInt(fileStats?.count ?? '0', 10),
           storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
           updated_at: root.updated_at,
+          owner_id: root.owner_id ?? null,
           owner_name: root.owner?.name ?? null,
           owner_email: root.owner?.email ?? null,
           owner_role: root.role?.name ?? null,
@@ -374,7 +382,7 @@ export class StatsController {
     // Fetch all accessible folders for BFS
     const allAccessibleFolders = await this.folderRepository.find({
       where: { id: In(accessibleFolderIds), deleted_at: IsNull() },
-      select: ['id', 'name', 'parent_id', 'updated_at'],
+      select: ['id', 'name', 'parent_id', 'updated_at', 'owner_id'],
     });
 
     // Build parent → children map
@@ -412,10 +420,13 @@ export class StatsController {
 
         const fileStats = await this.fileRepository
           .createQueryBuilder('file')
+          .innerJoin('file.folder', 'folder')
           .select('COUNT(*)', 'count')
           .addSelect('COALESCE(SUM(file.size), 0)', 'totalSize')
           .where('file.folder_id IN (:...folderIds)', { folderIds: allIds })
           .andWhere('file.deleted_at IS NULL')
+          .andWhere('folder.deleted_at IS NULL')
+          .andWhere('((folder.owner_id = :userId AND folder.role_id = :activeRoleId) OR (file.owner_id = :userId AND file.uploaded_by_role_id = :activeRoleId) OR (file.owner_id = folder.owner_id AND file.uploaded_by_role_id = folder.role_id))', { userId, activeRoleId })
           .getRawOne();
 
         return {
@@ -425,6 +436,7 @@ export class StatsController {
           file_count: parseInt(fileStats?.count ?? '0', 10),
           storage_size: parseInt(fileStats?.totalSize ?? '0', 10),
           updated_at: child.updated_at,
+          owner_id: child.owner_id ?? null,
           owner_name: null,
           owner_email: null,
           owner_role: null,
