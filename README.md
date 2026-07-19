@@ -398,25 +398,33 @@ npm install
 
 ## Database Setup
 
+Urutan berikut adalah **satu-satunya langkah yang perlu dijalankan** untuk menyiapkan database dari nol — cukup dilakukan sekali saat deploy pertama kali.
+
 ### 1. Buat Database PostgreSQL
 
 ```bash
 psql -U postgres
-CREATE DATABASE repository;
+CREATE DATABASE campus_repository;
 \q
 ```
 
-### 2. Konfigurasi TypeORM
+### 2. Jalankan Schema + RBAC Seed
 
-TypeORM dikonfigurasi dengan `synchronize: true` — schema database akan **otomatis dibuat/diperbarui** saat aplikasi pertama kali dijalankan.
-
-> **Penting untuk Production:** Set `synchronize: false` dan gunakan TypeORM migrations untuk menghindari data loss.
-
-### 3. Seed Data Awal
+`create-database.sql` bersifat **all-in-one**: membuat seluruh tabel, seed 9 role default, seed 17 permission sistem, dan otomatis meng-grant semua permission ke role admin. Tidak perlu menjalankan script lain secara terpisah — file ini idempotent (aman dijalankan ulang kapan saja tanpa membuat data duplikat).
 
 ```bash
-psql -U postgres -d repository -f seed-roles.sql
+psql -U postgres -d campus_repository -f create-database.sql
 ```
+
+### 3. Buat Akun Super Admin Pertama
+
+Akun user (termasuk password ter-hash bcrypt) tidak dibuat lewat SQL, melainkan lewat script Node agar password diproses aman oleh aplikasi:
+
+```bash
+npm run seed:superadmin
+```
+
+Default: `superadmin@repository.com` / `SuperAdmin123!` — bisa dikustom lewat environment variable `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME`, `ADMIN_UNIT` sebelum menjalankan perintah di atas.
 
 ### 4. Buat Folder Uploads
 
@@ -425,6 +433,8 @@ mkdir uploads
 # Linux/Mac:
 chmod 755 uploads
 ```
+
+> **Catatan:** `scripts/rbac-phase1.sql` dan `scripts/rbac-phase1-seed.sql` sudah digabung ke dalam `create-database.sql` di atas — kedua file tersebut tidak perlu dijalankan lagi.
 
 ---
 
