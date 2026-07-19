@@ -582,7 +582,6 @@ export class FoldersService implements OnModuleInit {
     const userPerms = await this.permissionRepository
       .createQueryBuilder('fp')
       .innerJoin('folders', 'f2', 'f2.id = fp.folder_id AND f2.deleted_at IS NULL')
-      .leftJoin('roles', 'r2', 'r2.id = f2.role_id')
       .select('fp.folder_id', 'folder_id')
       .where('fp.user_id = :userId', { userId: user.id })
       .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
@@ -620,17 +619,19 @@ export class FoldersService implements OnModuleInit {
     //    same filter rules apply and work correctly because descendants are owned by the
     //    sharer (owner_id ≠ current user) and have a different role_id than activeRoleId.
     const sharedFolders = folders.filter((f) => {
-      // Block same-role private folders (prevents Dosen A from seeing Dosen B's private folder
-      // via a group role share). Cross-role private folders (e.g. Dosen folder shared with WD1)
-      // are allowed through — the query guards already enforce correctness there.
-      const isPrivateSameRole = !!(f.role?.is_private && f.role_id === activeRoleId);
       const inUserShared = userSharedIds.has(f.id);
+      const inRoleShared = roleSharedIds.has(f.id);
       const isOwnerSameRole = f.owner_id === user.id && f.role_id === activeRoleId;
+      const isPrivateSameRole = !!(f.role?.is_private && f.role_id === activeRoleId);
       const differentRole = f.role_id !== activeRoleId;
-      console.log(`[DEBUG filter] folder=${f.id} name=${f.name} parent_id=${f.parent_id} is_private=${f.role?.is_private} role_id=${f.role_id} activeRole=${activeRoleId} → privateSameRole=${isPrivateSameRole} inUserShared=${inUserShared} isOwnerSameRole=${isOwnerSameRole} differentRole=${differentRole}`);
-      if (isPrivateSameRole && !inUserShared) return false;
-      if (inUserShared) return true;
+      console.log(`[DEBUG filter] folder=${f.id} name=${f.name} is_private=${f.role?.is_private} role_id=${f.role_id} activeRole=${activeRoleId} → inUserShared=${inUserShared} inRoleShared=${inRoleShared} isOwnerSameRole=${isOwnerSameRole} isPrivateSameRole=${isPrivateSameRole} differentRole=${differentRole}`);
+      // 1. Explicit grants (role-based or user-specific) always win
+      if (inUserShared || inRoleShared) return true;
+      // 2. Owner's own-role folders already appear in My Folders
       if (isOwnerSameRole) return false;
+      // 3. Same private-role without explicit grant → deny (prevents same-role leakage)
+      if (isPrivateSameRole) return false;
+      // 4. Default: show cross-workspace shares
       return differentRole;
     });
     console.log(`[DEBUG filter] sharedFolders count=${sharedFolders.length} ids=${JSON.stringify(sharedFolders.map(f => f.id))}`);
@@ -957,7 +958,6 @@ export class FoldersService implements OnModuleInit {
     const userSharedPerms = await this.permissionRepository
       .createQueryBuilder('fp')
       .innerJoin('folders', 'f2', 'f2.id = fp.folder_id AND f2.deleted_at IS NULL')
-      .leftJoin('roles', 'r2', 'r2.id = f2.role_id')
       .select('fp.folder_id', 'folder_id')
       .where('fp.user_id = :userId', { userId: user.id })
       .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })

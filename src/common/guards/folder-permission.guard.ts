@@ -109,15 +109,13 @@ export class FolderPermissionGuard implements CanActivate {
       // Explicit user-specific grant always wins (covers same-role & cross-role sharing).
       const userPerm = permissions.find(p => p.user_id === userId);
       if (userPerm) {
-        return (() => {
-          switch (permissionType) {
-            case PermissionType.READ: return userPerm.can_read;
-            case PermissionType.CREATE: return userPerm.can_create;
-            case PermissionType.UPDATE: return userPerm.can_update;
-            case PermissionType.DELETE: return userPerm.can_delete;
-            default: return false;
-          }
-        })();
+        switch (permissionType) {
+          case PermissionType.READ: return userPerm.can_read;
+          case PermissionType.CREATE: return userPerm.can_create;
+          case PermissionType.UPDATE: return userPerm.can_update;
+          case PermissionType.DELETE: return userPerm.can_delete;
+          default: return false;
+        }
       }
 
       // Same private role, no user-specific grant → deny (prevents role-level leakage).
