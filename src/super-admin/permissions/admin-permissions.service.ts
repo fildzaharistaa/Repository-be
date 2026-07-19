@@ -20,8 +20,37 @@ export class AdminPermissionsService {
   ) {}
 
   async create(dto: CreatePermissionDto, actorId?: string): Promise<Permission> {
-    const existing = await this.repo.findOne({ where: { slug: dto.slug } });
-    if (existing) throw new ConflictException(`Permission slug "${dto.slug}" already exists`);
+    // Include soft-deleted rows: the DB's unique constraint on `slug` still blocks
+    // a plain insert if a previously-deleted permission used the same slug.
+    const existing = await this.repo.findOne({
+      where: { slug: dto.slug },
+      withDeleted: true,
+    });
+
+    if (existing && !existing.deleted_at) {
+      throw new ConflictException(`Permission slug "${dto.slug}" already exists`);
+    }
+
+    if (existing && existing.deleted_at) {
+      // Revive the previously soft-deleted permission instead of attempting a
+      // duplicate insert (which would violate the unique slug constraint).
+      Object.assign(existing, {
+        module: dto.module,
+        action: dto.action,
+        submodule: dto.submodule ?? null,
+        name: dto.name,
+        description: dto.description ?? null,
+        category: dto.category ?? null,
+        visibility: dto.visibility ?? 'internal',
+        is_active: dto.is_active ?? true,
+        deleted_at: null,
+        updated_by: actorId ?? null,
+      });
+      const revived = await this.repo.save(existing);
+      this.cache.invalidateAll();
+      return revived;
+    }
+
     const perm = this.repo.create({
       slug: dto.slug,
       module: dto.module,
