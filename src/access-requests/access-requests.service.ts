@@ -191,7 +191,7 @@ export class AccessRequestsService {
 
     const request = await this.accessRequestRepo.findOne({
       where: { id: requestId },
-      relations: ['owner', 'requester', 'folder', 'file']
+      relations: ['owner', 'requester', 'folder', 'file', 'file.folder']
     });
 
     if (!request) {
