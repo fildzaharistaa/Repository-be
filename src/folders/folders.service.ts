@@ -571,7 +571,7 @@ export class FoldersService implements OnModuleInit {
       .andWhere('fp.user_id IS NULL')
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r3.is_private = true AND f3.role_id != :roleId)', { roleId: activeRoleId })
+      .andWhere('NOT (r3.is_private = true AND f3.role_id = :roleId)', { roleId: activeRoleId })
       .getRawMany();
 
     // --- 2. User-specific shared folders ---
@@ -588,7 +588,7 @@ export class FoldersService implements OnModuleInit {
       .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id != :roleId)', { roleId: activeRoleId })
+      .andWhere('NOT (r2.is_private = true AND f2.role_id = :roleId)', { roleId: activeRoleId })
       .getRawMany();
 
     const roleSharedIds = new Set(rolePerms.map((p) => p.folder_id));
@@ -621,14 +621,15 @@ export class FoldersService implements OnModuleInit {
     //    same filter rules apply and work correctly because descendants are owned by the
     //    sharer (owner_id ≠ current user) and have a different role_id than activeRoleId.
     const sharedFolders = folders.filter((f) => {
-      // A private-role folder is bound exclusively to its (user, role) creation context.
-      // Hide it from all other role views — including the same user's other roles.
-      const isPrivateOtherRole = !!(f.role?.is_private && f.role_id !== activeRoleId);
+      // Block same-role private folders (prevents Dosen A from seeing Dosen B's private folder
+      // via a group role share). Cross-role private folders (e.g. Dosen folder shared with WD1)
+      // are allowed through — the query guards already enforce correctness there.
+      const isPrivateSameRole = !!(f.role?.is_private && f.role_id === activeRoleId);
       const inUserShared = userSharedIds.has(f.id);
       const isOwnerSameRole = f.owner_id === user.id && f.role_id === activeRoleId;
       const differentRole = f.role_id !== activeRoleId;
-      console.log(`[DEBUG filter] folder=${f.id} name=${f.name} parent_id=${f.parent_id} is_private=${f.role?.is_private} role_id=${f.role_id} activeRole=${activeRoleId} → privateOtherRole=${isPrivateOtherRole} inUserShared=${inUserShared} isOwnerSameRole=${isOwnerSameRole} differentRole=${differentRole}`);
-      if (isPrivateOtherRole) return false;
+      console.log(`[DEBUG filter] folder=${f.id} name=${f.name} parent_id=${f.parent_id} is_private=${f.role?.is_private} role_id=${f.role_id} activeRole=${activeRoleId} → privateSameRole=${isPrivateSameRole} inUserShared=${inUserShared} isOwnerSameRole=${isOwnerSameRole} differentRole=${differentRole}`);
+      if (isPrivateSameRole && !inUserShared) return false;
       if (inUserShared) return true;
       if (isOwnerSameRole) return false;
       return differentRole;
@@ -950,7 +951,6 @@ export class FoldersService implements OnModuleInit {
       .andWhere('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
       .andWhere('f2.role_id != :activeRoleId', { activeRoleId })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
       .getRawMany();
 
     // 3. User-specific shared folders: personal grants scoped to the active role
@@ -964,7 +964,7 @@ export class FoldersService implements OnModuleInit {
       .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
       .andWhere('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id != :activeRoleId)', { activeRoleId })
+      .andWhere('NOT (r2.is_private = true AND f2.role_id = :activeRoleId)', { activeRoleId })
       .getRawMany();
 
     return Array.from(new Set([
@@ -1005,9 +1005,10 @@ export class FoldersService implements OnModuleInit {
     if (folder.role?.is_private) {
       // Owner in the exact role context: full access.
       if (folder.owner_id === userId) return roleId === folder.role_id;
-      // Non-owner: only allowed when they have an explicit user-specific permission grant.
-      const explicitPerm = permissions.find(p => p.user_id === userId);
-      return !!(explicitPerm as any)?.[`can_${permissionType}`];
+      // Same private role, not owner → deny (prevents same-role private workspace leakage).
+      if (folder.role_id === roleId) return false;
+      // Cross-role access: allow any explicit permission (user-specific OR role-based).
+      return permissions.some(p => !!(p as any)[`can_${permissionType}`]);
     }
 
     // Non-private: folder owner always has full access regardless of permission records.

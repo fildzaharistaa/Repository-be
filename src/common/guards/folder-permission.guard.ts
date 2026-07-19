@@ -94,11 +94,30 @@ export class FolderPermissionGuard implements CanActivate {
       return true;
     }
 
-    // Private workspace folder: only the owner (already returned above) may access it.
-    // Without this check, the workspace-role match below would grant every same-role
-    // member full access to another user's Workspace Pribadi folder.
+    // Private workspace folder: same-role non-owners are always denied (prevents same-role
+    // private workspace leakage). Cross-role non-owners may have explicit permissions —
+    // check those before denying.
     if (folder.role?.is_private && folder.owner_id !== userId) {
-      return false;
+      if (folder.role_id === roleId) return false;
+      // Cross-role: check explicit permissions (role-based or user-specific)
+      const permissions = await this.permissionRepository
+        .createQueryBuilder('fp')
+        .where('fp.folder_id = :folderId', { folderId: folder.id })
+        .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
+        .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
+        .getMany();
+      if (permissions.length === 0) {
+        return this.checkAncestorPermissions(folder, userId, roleId, permissionType, now);
+      }
+      return permissions.some(p => {
+        switch (permissionType) {
+          case PermissionType.READ: return p.can_read;
+          case PermissionType.CREATE: return p.can_create;
+          case PermissionType.UPDATE: return p.can_update;
+          case PermissionType.DELETE: return p.can_delete;
+          default: return false;
+        }
+      });
     }
 
     // Allow access if the requester's active role matches the folder's workspace role
