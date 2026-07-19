@@ -10,9 +10,10 @@ const pool = new Pool({
   database: process.env.DB_NAME || 'repository',
 });
 
-const email    = process.env.ADMIN_EMAIL    || 'superadmin@repository.com';
-const password = process.env.ADMIN_PASSWORD || 'SuperAdmin123!';
+const email    = process.env.ADMIN_EMAIL    || 'superadmin@upnvj.ac.id';
+const password = process.env.ADMIN_PASSWORD || 'superadmin123';
 const name     = process.env.ADMIN_NAME     || 'Super Admin';
+const unit     = process.env.ADMIN_UNIT     || 'Super Admin';
 
 async function run() {
   try {
@@ -39,10 +40,10 @@ async function run() {
     const hashed = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      `INSERT INTO users (email, password, name, role_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())
+      `INSERT INTO users (email, password, name, role_id, unit, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
        RETURNING id, email, name`,
-      [email, hashed, name, role.id]
+      [email, hashed, name, role.id, unit]
     );
 
     const user = result.rows[0];
