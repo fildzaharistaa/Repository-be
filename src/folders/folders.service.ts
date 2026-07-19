@@ -588,7 +588,6 @@ export class FoldersService implements OnModuleInit {
       .andWhere('(fp.role_id = :roleId OR fp.role_id IS NULL)', { roleId: activeRoleId })
       .andWhere('fp.can_read = true')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id = :roleId)', { roleId: activeRoleId })
       .getRawMany();
 
     const roleSharedIds = new Set(rolePerms.map((p) => p.folder_id));
@@ -964,7 +963,6 @@ export class FoldersService implements OnModuleInit {
       .andWhere('(fp.role_id = :activeRoleId OR fp.role_id IS NULL)', { activeRoleId })
       .andWhere('(fp.can_read = true OR fp.can_create = true OR fp.can_update = true OR fp.can_delete = true)')
       .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
-      .andWhere('NOT (r2.is_private = true AND f2.role_id = :activeRoleId)', { activeRoleId })
       .getRawMany();
 
     return Array.from(new Set([
@@ -1005,9 +1003,12 @@ export class FoldersService implements OnModuleInit {
     if (folder.role?.is_private) {
       // Owner in the exact role context: full access.
       if (folder.owner_id === userId) return roleId === folder.role_id;
-      // Same private role, not owner → deny (prevents same-role private workspace leakage).
+      // Explicit user-specific grant always takes precedence (covers same-role & cross-role).
+      const userPerm = permissions.find(p => p.user_id === userId);
+      if (userPerm) return !!(userPerm as any)[`can_${permissionType}`];
+      // Same private role, no user-specific grant → deny (prevents role-level leakage).
       if (folder.role_id === roleId) return false;
-      // Cross-role access: allow any explicit permission (user-specific OR role-based).
+      // Cross-role: role-based permission is enough.
       return permissions.some(p => !!(p as any)[`can_${permissionType}`]);
     }
 

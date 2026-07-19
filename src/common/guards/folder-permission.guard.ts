@@ -98,14 +98,32 @@ export class FolderPermissionGuard implements CanActivate {
     // private workspace leakage). Cross-role non-owners may have explicit permissions —
     // check those before denying.
     if (folder.role?.is_private && folder.owner_id !== userId) {
-      if (folder.role_id === roleId) return false;
-      // Cross-role: check explicit permissions (role-based or user-specific)
+      // Check all relevant permissions (user-specific or role-based for current active role).
       const permissions = await this.permissionRepository
         .createQueryBuilder('fp')
         .where('fp.folder_id = :folderId', { folderId: folder.id })
-        .andWhere('(fp.user_id = :userId OR fp.role_id = :roleId)', { userId, roleId })
+        .andWhere('(fp.user_id = :userId OR (fp.role_id = :roleId AND fp.user_id IS NULL))', { userId, roleId })
         .andWhere('(fp.expires_at IS NULL OR fp.expires_at > :now)', { now })
         .getMany();
+
+      // Explicit user-specific grant always wins (covers same-role & cross-role sharing).
+      const userPerm = permissions.find(p => p.user_id === userId);
+      if (userPerm) {
+        return (() => {
+          switch (permissionType) {
+            case PermissionType.READ: return userPerm.can_read;
+            case PermissionType.CREATE: return userPerm.can_create;
+            case PermissionType.UPDATE: return userPerm.can_update;
+            case PermissionType.DELETE: return userPerm.can_delete;
+            default: return false;
+          }
+        })();
+      }
+
+      // Same private role, no user-specific grant → deny (prevents role-level leakage).
+      if (folder.role_id === roleId) return false;
+
+      // Cross-role: role-based permission is enough.
       if (permissions.length === 0) {
         return this.checkAncestorPermissions(folder, userId, roleId, permissionType, now);
       }
