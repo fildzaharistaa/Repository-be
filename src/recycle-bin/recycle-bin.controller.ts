@@ -20,7 +20,8 @@ export class RecycleBinController {
 
   @Get()
   async findAllTrashed(@Request() req: RequestWithUser) {
-    const isAdmin = req.user.role?.name === 'admin';
+    const roleName = req.user.role?.name?.toLowerCase() ?? '';
+    const isAdmin = roleName === 'admin' || roleName === 'super admin' || roleName === 'superadmin';
     return this.recycleBinService.findAllTrashed(req.user.id, isAdmin);
   }
 
