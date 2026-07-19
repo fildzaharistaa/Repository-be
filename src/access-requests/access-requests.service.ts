@@ -304,7 +304,7 @@ export class AccessRequestsService {
   // =============================
   // NOTIFICATIONS: GABUNGAN DATA
   // =============================
-  async getNotifications(userId: string) {
+  async getNotifications(userId: string, activeRoleId: string) {
     // Cek apakah user adalah admin
     const user = await this.userRepo.findOne({
       where: { id: userId },
@@ -318,9 +318,12 @@ export class AccessRequestsService {
           where: { status: 'pending' },
           order: { createdAt: 'DESC' },
         })
-      : await this.accessRequestRepo.find({
+      : (await this.accessRequestRepo.find({
           where: { owner: { id: userId }, status: 'pending' },
           order: { createdAt: 'DESC' },
+        })).filter((r) => {
+          if (r.folder) return r.folder.role_id === activeRoleId;
+          return true;
         });
 
     // Notifikasi untuk requester: request mereka yang sudah di-approve/reject

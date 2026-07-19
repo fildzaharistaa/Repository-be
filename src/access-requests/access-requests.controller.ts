@@ -110,8 +110,11 @@ export class AccessRequestsController {
   // =============================
   @Get('notifications')
   getNotifications(@Req() req) {
+    const activeRoleId: string =
+      (req.user as any).active_role_id ?? req.user.role_id;
     return this.accessRequestsService.getNotifications(
-      req.user.id
+      req.user.id,
+      activeRoleId,
     );
   }
 
